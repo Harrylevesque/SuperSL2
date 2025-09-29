@@ -1,17 +1,23 @@
 import uuid, time, os, json, random, secrets, socket, requests
 
+from internal.recovery import generate_passphrase, checksum_passphrase, select_words, create_passphrase
+
 
 def new_user():
     userUUID = str(f"u--{uuid.uuid4()}")
-    directory = "../storage/user"
+    directory = "storage/user"
     filename = f"{userUUID}.json"
     filepath = os.path.join(directory, filename)
+
+    num_words = 12
+    words = select_words("internal/wordlist.txt", num_words)
+    passphrase = create_passphrase(words)
+    checksum = checksum_passphrase(passphrase)
 
 
     def get_local_ip():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # Doesn't need to be reachable
             s.connect(('10.255.255.255', 1))
             ip = s.getsockname()[0]
         except Exception:
@@ -26,26 +32,24 @@ def new_user():
         except Exception:
             return '0.0.0.0'
 
-    kchindata = {
-        "location": str(f"kchin--{uuid.uuid4()}"),
-        "createdAt": int(time.time()),
-        "pubk": str(f"pk--{secrets.token_urlsafe(1024)}"),
-        "privD": [
-            {
-                "privkeyD": "sample+changeme", ############################################
-                "ip": f"{get_public_ip()}",
-                "addedAt": int(time.time()),
-                "connecteddeviceUUID": None,
-            }
-        ]
-    }
-
     userfiledata = {
         "userUUID": userUUID,
         "createdAt": int(time.time()),
-        "keychain": kchindata,
-
-
+        "keychain": {
+            "location": str(f"kchin--{uuid.uuid4()}"),
+            "createdAt": int(time.time()),
+            "pubk": str(f"pk--{secrets.token_urlsafe(1024)}"),
+            "passphrase": passphrase,
+            "passphrase_checksum": checksum,
+            "privD": [
+                {
+                    "privkeyD": "sample+changeme",
+                    "ip": f"{get_public_ip()}",
+                    "addedAt": int(time.time()),
+                    "connecteddeviceUUID": None,
+                }
+            ]
+        },
         "allowedDevices": [
             {
                 "deviceUUID": str(f"d--{uuid.uuid4()}"),
@@ -53,33 +57,30 @@ def new_user():
                 "addedAt": int(time.time()),
             }
         ],
-
         "sessions": [
             {
                 "sessionUUID": str(f"s--{uuid.uuid4()}"),
                 "createdAt": int(time.time()),
                 "lastActive": int(time.time()),
                 "ipAddress": f"{get_public_ip()}:{get_local_ip()}"
-
             }
         ],
-
         "allowedIPs": [
             {
                 "ipAddress": f"{get_public_ip()}",
                 "addedAt": int(time.time()),
             }
         ],
-
     }
-    #create the file and put data in it defined above
+
     os.makedirs(directory, exist_ok=True)
     with open(filepath, "w") as json_file:
         json.dump(userfiledata, json_file, indent=4)
 
-    return {"status": "success", "userUUID": userUUID, "pubk": kchindata["pubk"]}
-
-
-if __name__ == "__main__":
-    result = new_user()
-    print(result)
+    return {
+        "status": "success",
+        "userUUID": userUUID,
+        "pubk": userfiledata["keychain"]["pubk"],
+        "passphrase_words": words,
+        "passphrase_checksum": checksum
+    }

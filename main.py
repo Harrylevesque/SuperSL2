@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from flow.signup import new_user
-from flow.adddevice import add_device
+from flow.adddevice import enroll_device
+from internal.recovery import checksum_checker
 
 app = FastAPI()
 
@@ -22,3 +23,7 @@ async def add_device_api(u_uuid: str, request: Request):
     ip = data.get("ip")
     result = add_device(u_uuid, k, ip)
     return result
+
+@app.get("/user/checksum/{userUUID}/{entered_words}")
+async def checkcksum(userUUID, entered_words):
+    return checksum_checker(userUUID, entered_words)

@@ -1,28 +1,20 @@
 import os, json, uuid, time
 
-def add_device(userUUID, k, ip):
-    directory = f"data/{userUUID}"
+def enroll_device(userUUID, privkeyD, ip):
+    directory = f"storage/user"
     filepath = os.path.join(directory, f"{userUUID}.json")
-    userfile = None
-
-    for filename in os.listdir(directory):
-        filepath = os.path.join(directory, filename)
-        with open(filepath, "r") as f:
-            userfiledata = json.load(f)
-            if userfiledata.get("userUUID") == userUUID:
-                userfile = filepath
-                break
-    if not userfile:
+    if not os.path.exists(filepath):
         return {"error": "User not found"}
-    with open(userfile, "r") as f:
+
+    with open(filepath, "r") as f:
         userfiledata = json.load(f)
 
-    deviceUUID = str(f"d--{uuid.uuid4()}")
+    deviceUUID = f"d--{uuid.uuid4()}"
     device_entry = {
         "deviceUUID": deviceUUID,
         "deviceName": f"Device-{uuid.uuid4().hex[:6]}",
         "addedAt": int(time.time()),
-        "trusted" : False
+        "trusted": False
     }
     if not userfiledata.get("allowedDevices"):
         userfiledata["allowedDevices"] = []
@@ -31,12 +23,11 @@ def add_device(userUUID, k, ip):
     userfiledata["allowedDevices"].append(device_entry)
 
     privD_entry = {
-        "privkeyD": k,
+        "privkeyD": privkeyD,
         "ip": ip,
         "addedAt": int(time.time()),
         "connecteddeviceUUID": deviceUUID,
     }
-
     if "keychain" not in userfiledata:
         userfiledata["keychain"] = {}
     if "privD" not in userfiledata["keychain"]:
@@ -44,7 +35,7 @@ def add_device(userUUID, k, ip):
     userfiledata["keychain"]["privD"].append(privD_entry)
 
     session_entry = {
-        "sessionUUID": str(f"s--{uuid.uuid4()}"),
+        "sessionUUID": f"s--{uuid.uuid4()}",
         "createdAt": int(time.time()),
         "lastActive": int(time.time()),
         "ipAddress": ip
@@ -56,4 +47,4 @@ def add_device(userUUID, k, ip):
     with open(filepath, "w") as f:
         json.dump(userfiledata, f, indent=4)
 
-    return {"status": "success", "deviceUUID": deviceUUID, "privkeyD": k}
+    return {"status": "success", "deviceUUID": deviceUUID, "deviceName": device_entry["deviceName"]}
