@@ -1,6 +1,8 @@
 import uuid, time, os, json, random, secrets, socket, requests
 
 from internal.recovery import generate_passphrase, checksum_passphrase, select_words, create_passphrase
+from flow.servicemanagement.newservice import new_service
+
 
 
 def new_user():
@@ -9,7 +11,7 @@ def new_user():
     filename = f"{userUUID}.json"
     filepath = os.path.join(directory, filename)
 
-    num_words = 12
+    num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
     passphrase = create_passphrase(words)
     checksum = checksum_passphrase(passphrase)
@@ -39,7 +41,7 @@ def new_user():
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": str(f"pk--{secrets.token_urlsafe(1024)}"),
-            "passphrase": passphrase,
+            #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
                 {
@@ -82,5 +84,30 @@ def new_user():
         "userUUID": userUUID,
         "pubk": userfiledata["keychain"]["pubk"],
         "passphrase_words": words,
-        "passphrase_checksum": checksum
+        #"passphrase_checksum": checksum
+    }
+
+
+def new_user_with_service(username, service_name, service_description):
+    useruuid = f"u--{uuid.uuid4()}"
+    user_dir = f"storage/{useruuid}/service"
+    os.makedirs(user_dir, exist_ok=True)
+
+    # Normal user data
+    user_data = {
+        "userUUID": useruuid,
+        "username": username,
+        "createdAt": int(time.time()),
+        "status": "active"
+    }
+    user_file = os.path.join(user_dir, f"{useruuid}.json")
+    with open(user_file, "w") as f:
+        json.dump(user_data, f, indent=4)
+
+    # Create service
+    service_result = new_service(useruuid, service_name, service_description)
+
+    return {
+        "user": user_data,
+        "service": service_result
     }
