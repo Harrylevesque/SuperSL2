@@ -1,7 +1,6 @@
 import uuid, time, os, json, random, secrets, socket, requests
 
-from internal.recovery import generate_passphrase, checksum_passphrase, select_words, create_passphrase
-from flow.servicemanagement.newservice import new_service
+from internal.recovery import checksum_passphrase, select_words, create_passphrase
 
 
 
@@ -89,16 +88,20 @@ def new_user(pubk):
 
 
 
-def new_user_service(serviceuuid):
+def new_user_service(serviceuuid, pubk=None):
+    # ignore incoming serviceuuid and generate a new one (keeps previous behaviour)
     serviceuuid = str(f"sv--{uuid.uuid4()}")
     directory = f"storage/user/{serviceuuid}"
     filename = f"{serviceuuid}.json"
     filepath = os.path.join(directory, filename)
+    dispatch_server = "https://dispatch.ssl.harrylevesque.dev"
 
     num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
     passphrase = create_passphrase(words)
     checksum = checksum_passphrase(passphrase)
+
+
 
 
     def get_local_ip():
@@ -113,10 +116,15 @@ def new_user_service(serviceuuid):
         return ip
 
     def get_public_ip():
+        localip = requests.get("https://api.ipify.org").text
+        requests.get(f"{dispatch_server}/service/create/{serviceuuid}/{localip}")
         try:
-            return requests.get("https://api.ipify.org").text
+            return localip
         except Exception:
             return '0.0.0.0'
+
+    # use provided pubk if given, otherwise generate one
+    pubk_value = pubk if pubk else str(f"pk--{secrets.token_urlsafe(1024)}")
 
     userfiledata = {
         "serviceuuid": serviceuuid,
@@ -124,7 +132,7 @@ def new_user_service(serviceuuid):
         "keychain": {
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
-            "pubk": str(f"pk--{secrets.token_urlsafe(1024)}"),
+            "pubk": pubk_value,
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
@@ -172,7 +180,7 @@ def new_user_service(serviceuuid):
     }
 
 
-def new_user_service_user(serviceuuid):
+def new_user_service_user(serviceuuid, pubk=None):
     service_user_user = str(f"svu--{uuid.uuid4()}")
     directory = f"storage/user/{serviceuuid}"
     filename = f"{service_user_user}.json"
@@ -201,6 +209,8 @@ def new_user_service_user(serviceuuid):
         except Exception:
             return '0.0.0.0'
 
+    pubk_value = pubk if pubk else str(f"pk--{secrets.token_urlsafe(1024)}")
+
     userfiledata = {
         "serviceuuid": serviceuuid,
         "svuUUI": service_user_user,
@@ -208,7 +218,7 @@ def new_user_service_user(serviceuuid):
         "keychain": {
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
-            "pubk": str(f"pk--{secrets.token_urlsafe(1024)}"),
+            "pubk": pubk_value,
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
