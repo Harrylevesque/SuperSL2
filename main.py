@@ -13,6 +13,7 @@ from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
 from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
+from flow.ssh import step1_content
 
 app = FastAPI(
     title="SuperSL2 API",
@@ -25,7 +26,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8001"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -114,3 +115,14 @@ async def findSVU(sv_uuid: str, svu_uuid: str):
 
     data.update({"sv_uuid": sv_uuid, "svu_uuid": svu_uuid, "exists": True})
     return data
+
+
+@app.get("/service/{sv_uuid}/user/{svu_uuid}/{con_uuid}/step/1")
+async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str):
+    def start_ssh_session(sv_uuid, svu_uuid, con_uuid, pubkey):
+
+        return True
+
+
+
+    return step1_content
