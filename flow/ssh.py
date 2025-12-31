@@ -1,8 +1,8 @@
+# python
+from pathlib import Path
 import json
-import os
 import copy
-from typing import Optional, Dict, Any
-
+from typing import Dict, Any, Optional
 
 step1_content: Dict[str, Any] = {
     "context": {
@@ -23,78 +23,80 @@ step1_content: Dict[str, Any] = {
         "request_totp_info": {"name": "request totp info", "startpoint": "user", "endpoint": "dispatch"},
         "return_totp_info": {"name": "return totp info", "startpoint": "dispatch", "endpoint": "user"},
         "user_return_totp": {"name": "user return totp", "startpoint": "user", "endpoint": "dispatch", "answer": ""},
-        "service_return_totp": {"name": "service return totp", "startpoint": "service", "endpoint": "dispatch", "answer": ""}
+        "service_return_totp": {"name": "service return totp", "startpoint": "service", "endpoint": "dispatch",
+                                "answer": ""}
     }
 }
 
 
 def create_template(
-    con_uuid: str = "",
-    svu_uuid: str = "",
-    sv_uuid: str = "",
-    ip: str = "",
-    pubk: str = "",
-    keypair_number: int = 0,
-    unixTime: str = "",
+        con_uuid: str = "",
+        svu_uuid: str = "",
+        sv_uuid: str = "",
+        ip: str = "",
+        pubk: Optional[str] = None,
+        keypair_number: int = 0,
+        unixTime: Optional[str] = None,
 ) -> Dict[str, Any]:
-
+    """
+    Return a fresh template copied from step1_content and populate context.
+    Only set the 'pubk' field inside the 'return_pubkey' step when a pubk is provided.
+    """
     tpl = copy.deepcopy(step1_content)
-    tpl["context"]["con_uuid"] = con_uuid
-    tpl["context"]["svu_uuid"] = svu_uuid
-    tpl["context"]["sv_uuid"] = sv_uuid
-    tpl["context"]["ip"] = ip
-    tpl["context"]["pubk"] = pubk
-    tpl["context"]["keypair_number"] = keypair_number
-    tpl["context"]["unixTime"] = unixTime
+    tpl["context"].update({
+        "con_uuid": con_uuid,
+        "svu_uuid": svu_uuid,
+        "sv_uuid": sv_uuid,
+        "ip": ip or "",
+        "pubk": pubk or "",
+        "keypair_number": keypair_number,
+        "unixTime": unixTime or ""
+    })
     if pubk:
-        if "pubk" in tpl["steps"].get("return_pubkey", {}):
-            tpl["steps"]["return_pubkey"]["pubk"] = pubk
+        # assign directly to the existing dict so it persists in the template
+        tpl["steps"]["return_pubkey"]["pubk"] = pubk
     return tpl
 
 
-def write_json(path: str, data: Dict[str, Any]) -> None:
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def write_json(path: Path, data: Dict[str, Any]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 def working_file(
-    con_uuid: str,
-    svu_uuid: str,
-    sv_uuid: str,
-    pubkey: Optional[str] = "",
-    ip: Optional[str] = "",
-    keypair_number: int = 0,
-    unixTime: Optional[str] = "",
-    out_dir: str = "../storage/session",
+        con_uuid: str,
+        svu_uuid: str,
+        sv_uuid: str,
+        pubkey: Optional[str] = None,
+        ip: Optional[str] = None,
+        keypair_number: int = 0,
+        unixTime: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create the JSON template populated with provided context and write to disk.
-
-    Returns the template dict.
-    """
     template = create_template(
         con_uuid=con_uuid,
         svu_uuid=svu_uuid,
         sv_uuid=sv_uuid,
         ip=ip or "",
-        pubk=pubkey or "",
+        pubk=pubkey,
         keypair_number=keypair_number,
-        unixTime=unixTime or "",
+        unixTime=unixTime,
     )
 
-    filepath = os.path.join(out_dir, f"{con_uuid}.json")
+    save_dir = PROJECT_ROOT / "storage" / "session"
+    filepath = save_dir / f"{con_uuid}.json"
+
+    save_dir.mkdir(parents=True, exist_ok=True)
     write_json(filepath, template)
-    return template
 
-
+    return {"path": str(filepath.resolve()), "template": template}
 
 
 
 
 if __name__ == "__main__":
-    # Simple CLI for manual testing
     sv_uuid = input("Enter service UUID: ")
     svu_uuid = input("Enter service-user UUID: ")
     con_uuid = input("Enter connection UUID: ")

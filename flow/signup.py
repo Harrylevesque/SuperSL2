@@ -258,7 +258,7 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
 
     os.makedirs(directory, exist_ok=True)
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4)
+        json.dump(userfiledata, json_file, indent=4, default=list)
 
     return {
         "status": "success",
