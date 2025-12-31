@@ -4,7 +4,7 @@ from internal.recovery import checksum_passphrase, select_words, create_passphra
 
 
 
-def new_user(pubk):
+def new_user(pubk, keypairs=None):
     userUUID = str(f"u--{uuid.uuid4()}")
     directory = "storage/user"
     filename = f"{userUUID}.json"
@@ -40,6 +40,7 @@ def new_user(pubk):
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": pubk,
+            "keypairs": keypairs if keypairs else {},
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
@@ -88,13 +89,13 @@ def new_user(pubk):
 
 
 
-def new_user_service(serviceuuid, pubk=None):
+def new_user_service(serviceuuid, pubk=None, keypairs=None):
     # ignore incoming serviceuuid and generate a new one (keeps previous behaviour)
     serviceuuid = str(f"sv--{uuid.uuid4()}")
     directory = f"storage/user/{serviceuuid}"
     filename = f"{serviceuuid}.json"
     filepath = os.path.join(directory, filename)
-    dispatch_server = "https://dispatch.ssl.harrylevesque.dev"
+    dispatch_server = "http://127.0.0.1:8002"
 
     num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
@@ -133,6 +134,7 @@ def new_user_service(serviceuuid, pubk=None):
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": pubk_value,
+            "keypairs": keypairs if keypairs else {},
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
@@ -180,7 +182,7 @@ def new_user_service(serviceuuid, pubk=None):
     }
 
 
-def new_user_service_user(serviceuuid, pubk=None):
+def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
     service_user_user = str(f"svu--{uuid.uuid4()}")
     directory = f"storage/user/{serviceuuid}"
     filename = f"{service_user_user}.json"
@@ -219,6 +221,7 @@ def new_user_service_user(serviceuuid, pubk=None):
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": pubk_value,
+            "keypairs": keypairs if keypairs else {"error"},
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
             "privD": [
@@ -255,7 +258,7 @@ def new_user_service_user(serviceuuid, pubk=None):
 
     os.makedirs(directory, exist_ok=True)
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4)
+        json.dump(userfiledata, json_file, indent=4, default=list)
 
     return {
         "status": "success",

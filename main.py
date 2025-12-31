@@ -2,17 +2,19 @@
 Rewritten main.py: single FastAPI app, request models for OpenAPI, and all existing endpoints
 preserved and annotated so /docs shows complete schemas.
 """
-from fastapi import FastAPI, HTTPException, Path
+from fastapi import FastAPI, HTTPException, Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import os
 import json
+from pathlib import Path
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
 from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
+from flow.ssh import step1_content, working_file
 
 app = FastAPI(
     title="SuperSL2 API",
@@ -25,7 +27,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8001"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,15 +57,13 @@ async def new_user_api(payload: PubKeyRequest):
 
 
 @app.post("/service/{serviceuuid}/service/new", tags=["signup"], summary="Create a new service (serviceUUID parameter kept for routing)")
-async def create_service(serviceuuid: str = Path(..., description="service UUID (not used for generation)"), payload: PubKeyRequest = None):
-    # Accept an optional pubk payload and forward it to new_user_service so services can be created
+async def create_service(serviceuuid: str = FastAPIPath(..., description="service UUID (not used for generation)"), payload: PubKeyRequest = None):
     pubk = payload.pubk if payload else None
     return new_user_service(serviceuuid, pubk)
 
 
 @app.post("/service/{serviceuuid}/user/new", tags=["signup"], summary="Create a new service user (svu)")
-async def new_user_service_user_api(serviceuuid: str = Path(..., description="Parent service UUID"), payload: PubKeyRequest = None):
-    # Accept an optional pubk payload and forward it to new_user_service_user
+async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: PubKeyRequest = None):
     pubk = payload.pubk if payload else None
     return new_user_service_user(serviceuuid, pubk)
 
@@ -114,3 +114,24 @@ async def findSVU(sv_uuid: str, svu_uuid: str):
 
     data.update({"sv_uuid": sv_uuid, "svu_uuid": svu_uuid, "exists": True})
     return data
+
+
+@app.get("/service/{sv_uuid}/user/{svu_uuid}/{con_uuid}/step/1")
+async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional[str] = None):
+    # build working file data (uses flow.ssh.working_file)
+    workingfile = working_file(
+        con_uuid=con_uuid,
+        svu_uuid=svu_uuid,
+        sv_uuid=sv_uuid,
+        pubkey=pubkey,
+    )
+
+    # write to storage/session/<con_uuid>.json, creating directories if needed
+    con_uuid_path = Path("storage") / "session" / f"{con_uuid}.json"
+    con_uuid_path.parent.mkdir(parents=True, exist_ok=True)
+    con_uuid_path.write_text(json.dumps(workingfile, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+
+
+    return step1_content
