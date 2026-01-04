@@ -4,6 +4,8 @@ import json
 import copy
 from typing import Dict, Any, Optional
 
+from config import BASE_SAVE_DIR
+
 step1_content: Dict[str, Any] = {
     "context": {
         "con_uuid": "",
@@ -63,9 +65,6 @@ def write_json(path: Path, data: Dict[str, Any]):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-PROJECT_ROOT = Path(__file__).parent.parent
-
-
 def working_file(
         con_uuid: str,
         svu_uuid: str,
@@ -85,7 +84,7 @@ def working_file(
         unixTime=unixTime,
     )
 
-    save_dir = PROJECT_ROOT / "storage" / "session"
+    save_dir = BASE_SAVE_DIR / "session"
     filepath = save_dir / f"{con_uuid}.json"
 
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +92,11 @@ def working_file(
 
     return {"path": str(filepath.resolve()), "template": template}
 
+
+
+def create_ssh_user():
+
+    pass
 
 
 

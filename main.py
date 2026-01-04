@@ -15,6 +15,7 @@ from flow.adddevice import enroll_device
 from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
 from flow.ssh import step1_content, working_file
+from config import BASE_SAVE_DIR
 
 app = FastAPI(
     title="SuperSL2 API",
@@ -127,7 +128,7 @@ async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional
     )
 
     # write to storage/session/<con_uuid>.json, creating directories if needed
-    con_uuid_path = Path("storage") / "session" / f"{con_uuid}.json"
+    con_uuid_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
     con_uuid_path.parent.mkdir(parents=True, exist_ok=True)
     con_uuid_path.write_text(json.dumps(workingfile, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -135,3 +136,4 @@ async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional
 
 
     return step1_content
+

@@ -6,6 +6,8 @@ import hashlib
 import os
 from pathlib import Path
 
+from config import BASE_SAVE_DIR
+
 cryptstage = ["hex", "hexbase64", "hexbase64sha256"]
 
 app = typer.Typer()
@@ -15,7 +17,7 @@ def write_pubk_to_workingfile(
         pubkey: str,
 ):
 
-    base_dir = Path("../storage/session")
+    base_dir = BASE_SAVE_DIR / "session"
     file_path = base_dir / f"{con_uuid}.json"
 
     with open(file_path, "r") as f:
@@ -120,7 +122,7 @@ def pubkcheck(con_uuid: str, sv_uuid: str, svu_uuid: str, stage: str, user_store
 
 
 def get_pubk(sv_uuid: str, svu_uuid: str):
-    path = os.path.join('..', 'storage', 'user', f"{sv_uuid}", f'{svu_uuid}.json')
+    path = BASE_SAVE_DIR / "user" / sv_uuid / f"{svu_uuid}.json"
 
     try:
         with open(path, 'r', encoding='utf-8') as f:
