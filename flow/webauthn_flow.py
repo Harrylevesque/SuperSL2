@@ -18,9 +18,9 @@ else:
 
 CHALLENGES: dict = {}
 
-RP_ID = 'localhost'
+RP_ID = 'https://service.mfaip.harrylevesque.dev/'
 RP_NAME = 'WebAuthn Demo'
-ORIGIN = 'http://localhost:8000'
+ORIGIN = 'https://service.mfaip.harrylevesque.dev/'
 
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
