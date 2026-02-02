@@ -4,7 +4,7 @@ preserved and annotated so /docs shows complete schemas.
 """
 from fastapi import FastAPI, HTTPException, Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 
@@ -207,3 +207,12 @@ async def serve_index():
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
     return FileResponse(str(index_path), media_type="text/html")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
