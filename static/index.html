@@ -24,6 +24,10 @@ async function register() {
     status('Starting registration...');
     const resp = await fetch(`${BASE_URL}/register/start?user_id=${USER_ID}`);
     const opts = await resp.json();
+    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+      status('Registration failed: Invalid options from server', 'red');
+      return;
+    }
     let attResp;
     try {
       attResp = await startRegistration(opts);
@@ -45,6 +49,10 @@ async function authenticate() {
     status('Starting authentication...');
     const resp = await fetch(`${BASE_URL}/auth/start?user_id=${USER_ID}`);
     const opts = await resp.json();
+    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+      status('Auth failed: Invalid options from server', 'red');
+      return;
+    }
     let attResp;
     try {
       attResp = await startAuthentication(opts);
