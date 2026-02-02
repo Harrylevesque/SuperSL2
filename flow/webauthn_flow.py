@@ -18,7 +18,7 @@ else:
 
 CHALLENGES: dict = {}
 
-RP_ID = 'service.mfaip.harrylevesque.dev/'
+RP_ID = 'service.mfaip.harrylevesque.dev'
 RP_NAME = 'WebAuthn Demo'
 ORIGIN = 'https://service.mfaip.harrylevesque.dev/'
 
