@@ -4,11 +4,17 @@ preserved and annotated so /docs shows complete schemas.
 """
 from fastapi import FastAPI, HTTPException, Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import Request
+
+
 from pydantic import BaseModel
 from typing import Optional
 import os
 import json
 from pathlib import Path
+import logging
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
@@ -16,6 +22,9 @@ from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
 from flow.ssh import step1_content, working_file
 from config import BASE_SAVE_DIR
+from flow.webauthn_flow import (
+    register_start, register_finish, auth_start, auth_finish
+)
 
 app = FastAPI(
     title="SuperSL2 API",
@@ -24,6 +33,10 @@ app = FastAPI(
     openapi_url="/openapi.json",
     docs_url="/docs",
 )
+
+# set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 app.add_middleware(
@@ -46,10 +59,14 @@ class AddDeviceRequest(BaseModel):
     ip: Optional[str] = None
 
 
+class Username(BaseModel):
+    username: str
+
+class CredentialPayload(BaseModel):
+    username: str
+    credential: dict
+
 # --- Endpoints ---
-@app.get("/", tags=["root"])
-async def root():
-    return {"message": "Hello World"}
 
 
 @app.post("/serviceuser/new", tags=["signup"], summary="Create a new top-level user")
@@ -137,3 +154,56 @@ async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional
 
     return step1_content
 
+
+
+
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", include_in_schema=False)
+async def index():
+    index_path = Path("static") / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path), media_type="text/html")
+
+@app.get("/webauth/register/start")
+async def reg_start(user_id: str = "user1"):
+    return await register_start(user_id)
+
+@app.post("/webauth/register/finish")
+async def reg_finish(request: Request):
+    return await register_finish(await request.json())
+
+@app.get("/webauth/auth/start")
+async def a_start(user_id: str = "user1"):
+    return await auth_start(user_id)
+
+@app.post("/webauth/auth/finish")
+async def a_finish(request: Request):
+    return await auth_finish(await request.json())
+
+
+
+
+
+# serve favicon if present
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    favicon_path = Path("static") / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path), media_type="image/x-icon")
+    raise HTTPException(status_code=404, detail="favicon not found")
+
+
+# Mount the static directory (add after app = FastAPI(...))
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Add an endpoint that serves `static/index.html` at /index.html
+@app.get("/index.html", include_in_schema=False)
+async def serve_index():
+    index_path = Path("static") / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path), media_type="text/html")

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>WebAuthn Demo</title>
+</head>
+<body>
+<h1>WebAuthn Demo (/webauth)</h1>
+<button onclick="register()">Register (user1)</button>
+<button onclick="authenticate()">Authenticate (user1)</button>
+<div id="status"></div>
+
+<script type="module">
+import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
+
+const BASE_URL = 'http://localhost:8000/webauth';
+const USER_ID = 'user1';
+
+function status(msg, color='black') {
+  document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
+}
+
+async function register() {
+  try {
+    status('Starting registration...');
+    const resp = await fetch(`${BASE_URL}/register/start?user_id=${USER_ID}`);
+    const opts = await resp.json();
+    let attResp;
+    try {
+      attResp = await startRegistration(opts);
+    } catch (e) { status('Registration failed: ' + e, 'red'); return; }
+    const verification = await fetch(`${BASE_URL}/register/finish`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(attResp)
+    });
+    const result = await verification.json();
+    status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
+  } catch (e) {
+    status('Error: ' + e.message, 'red');
+  }
+}
+
+async function authenticate() {
+  try {
+    status('Starting authentication...');
+    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${USER_ID}`);
+    const opts = await resp.json();
+    let attResp;
+    try {
+      attResp = await startAuthentication(opts);
+    } catch (e) { status('Auth failed: ' + e, 'red'); return; }
+    const verification = await fetch(`${BASE_URL}/auth/finish`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(attResp)
+    });
+    const result = await verification.json();
+    status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
+  } catch (e) {
+    status('Error: ' + e.message, 'red');
+  }
+}
+
+// Expose functions to global scope for onclick handlers
+window.register = register;
+window.authenticate = authenticate;
+</script>
+</body>
+</html>

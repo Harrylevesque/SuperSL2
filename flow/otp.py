@@ -5,12 +5,9 @@ from cryptography.exceptions import InvalidSignature
 import typer
 
 # === CONFIGURABLE PARAMETERS ===
-INTERVAL = 3600      # seconds per time bucket
-TOLERANCE = 15       # ±bucket tolerance
+INTERVAL = 5      # seconds per time bucket
+TOLERANCE = 2       # ±bucket tolerance
 
-app = typer.Typer()
-
-@app.command()
 def server_verify_single_use_otp(
     nonce: str,
     pk_hex: str,
@@ -66,6 +63,3 @@ def server_verify_single_use_otp(
 
     typer.echo("invalid")
     return False
-
-if __name__ == "__main__":
-    app()
