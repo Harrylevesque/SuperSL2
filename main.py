@@ -56,6 +56,7 @@ app.add_middleware(
 # --- Request models (show up in OpenAPI and docs) ---
 class PubKeyRequest(BaseModel):
     pubk: str
+    KPek: Optional[str] = None
 
 
 class AddDeviceRequest(BaseModel):
@@ -87,7 +88,15 @@ async def create_service(serviceuuid: str = FastAPIPath(..., description="servic
 @app.post("/service/{serviceuuid}/user/new", tags=["signup"], summary="Create a new service user (svu)")
 async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: PubKeyRequest = None):
     pubk = payload.pubk if payload else None
-    return new_user_service_user(serviceuuid, pubk)
+    KPek = payload.KPek if payload and hasattr(payload, 'KPek') else None
+    if KPek is not None:
+        result = new_user_service_user(serviceuuid, pubk, KPek)
+        if isinstance(result, dict):
+            result["KPek"] = KPek
+            return result
+        return {"result": result, "KPek": KPek}
+    else:
+        return "KPek is required for SVU creation with current implementation. Please provide KPek in the request body.", 400
 
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
