@@ -12,12 +12,8 @@
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
-// Fetch BASE_URL from backend config.json generated from .env
-const config = await fetch('/config.json').then(r => r.json());
-if (!config.BASE_URL) {
-  throw new Error('BASE_URL not set in backend config.json');
-}
-const BASE_URL = config.BASE_URL;
+// Hardcode BASE_URL as requested
+const BASE_URL = 'https://service.mfaip.harrylevesque.dev/webauthn';
 const USER_ID = 'user1';
 
 function status(msg, color='black') {

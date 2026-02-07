@@ -27,6 +27,9 @@ from flow.webauthn_flow import (
     register_start, register_finish, auth_start, auth_finish
 )
 
+# Load environment variables from .env file
+dotenv.load_dotenv()
+
 app = FastAPI(
     title="SuperSL2 API",
     description="API for user/service creation, device enrollment and pubkey management.",
