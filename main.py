@@ -187,7 +187,10 @@ async def a_finish(request: Request):
 
 @app.get("/config.json")
 def get_config():
-    return JSONResponse({"BASE_URL": os.environ.get("HOST", "http://localhost:8000/webauth")})
+    base_url = os.environ.get("host")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="host not set in .env")
+    return JSONResponse({"BASE_URL": base_url})
 
 # serve favicon if present
 @app.get("/favicon.ico", include_in_schema=False)
