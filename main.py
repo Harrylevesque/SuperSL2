@@ -185,7 +185,8 @@ async def a_start(user_id: str = "user1"):
 async def a_finish(request: Request):
     return await auth_finish(await request.json())
 
-@app.get("/config.json")
+# Ensure /config.json is always available at the root, regardless of subpath or mount
+@app.get("/config.json", include_in_schema=False)
 def get_config():
     base_url = os.environ.get("host")
     if not base_url:
