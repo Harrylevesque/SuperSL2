@@ -13,8 +13,8 @@ dotenv.load_dotenv()
 host_env = os.environ.get("host")
 if not host_env:
     raise RuntimeError("host not set in .env")
-RP_ID = 'localhost'
-RP_NAME = 'WebAuthn Demo'
+RP_ID = 'service.mfaip.harrylevesque.dev'
+RP_NAME = 'multi factor authentication ststem in python to replace current systems'
 ORIGIN = host_env
 
 logger = logging.getLogger(__name__)
