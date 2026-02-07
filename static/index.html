@@ -14,7 +14,10 @@ import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net
 
 // Fetch BASE_URL from backend config.json generated from .env
 const config = await fetch('/config.json').then(r => r.json());
-const BASE_URL = config.BASE_URL || 'http://localhost:8091/webauth';
+if (!config.BASE_URL) {
+  throw new Error('BASE_URL not set in backend config.json');
+}
+const BASE_URL = config.BASE_URL;
 const USER_ID = 'user1';
 
 function status(msg, color='black') {

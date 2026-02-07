@@ -7,6 +7,15 @@ from webauthn.helpers.structs import UserVerificationRequirement, RegistrationCr
 import json
 import os
 import logging
+import dotenv
+
+dotenv.load_dotenv()
+host_env = os.environ.get("host")
+if not host_env:
+    raise RuntimeError("host not set in .env")
+RP_ID = 'localhost'
+RP_NAME = 'WebAuthn Demo'
+ORIGIN = host_env
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +27,6 @@ else:
     CREDENTIALS = {}
 
 CHALLENGES: dict = {}
-
-RP_ID = 'service.mfaip.harrylevesque.dev'
-RP_NAME = 'WebAuthn Demo'
-ORIGIN = 'https://service.mfaip.harrylevesque.dev/'
 
 async def register_start(user_id: str):
     try:
