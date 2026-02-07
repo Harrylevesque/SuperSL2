@@ -79,8 +79,19 @@ def new_user(pubk, keypairs=None):
     }
 
     directory.mkdir(parents=True, exist_ok=True)
+
+
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4)
+        def make_json_serializable(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            if isinstance(obj, dict):
+                return {k: make_json_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [make_json_serializable(v) for v in obj]
+            return obj
+
+        json.dump(make_json_serializable(userfiledata), json_file, indent=4)
 
     return {
         "status": "success",
@@ -259,8 +270,16 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
     }
 
     directory.mkdir(parents=True, exist_ok=True)
+    def make_json_serializable(obj):
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, dict):
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [make_json_serializable(v) for v in obj]
+        return obj
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4)
+        json.dump(make_json_serializable(userfiledata), json_file, indent=4)
 
     return {
         "status": "success",

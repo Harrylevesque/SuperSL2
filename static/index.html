@@ -12,7 +12,9 @@
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
-const BASE_URL = 'http://localhost:8000/webauth';
+// Fetch BASE_URL from backend config.json generated from .env
+const config = await fetch('/config.json').then(r => r.json());
+const BASE_URL = config.BASE_URL || 'http://localhost:8000/webauth';
 const USER_ID = 'user1';
 
 function status(msg, color='black') {

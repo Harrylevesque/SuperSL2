@@ -15,6 +15,7 @@ import os
 import json
 from pathlib import Path
 import logging
+import dotenv
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
@@ -184,9 +185,9 @@ async def a_start(user_id: str = "user1"):
 async def a_finish(request: Request):
     return await auth_finish(await request.json())
 
-
-
-
+@app.get("/config.json")
+def get_config():
+    return JSONResponse({"BASE_URL": os.environ.get("HOST", "http://localhost:8000/webauth")})
 
 # serve favicon if present
 @app.get("/favicon.ico", include_in_schema=False)
