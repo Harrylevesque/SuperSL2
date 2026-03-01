@@ -2,20 +2,22 @@
 Rewritten main.py: single FastAPI app, request models for OpenAPI, and all existing endpoints
 preserved and annotated so /docs shows complete schemas.
 """
-from fastapi import FastAPI, HTTPException, Path as FastAPIPath
+from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import os
 import json
 from pathlib import Path
 import logging
 import dotenv
+import base64
+from nacl.signing import VerifyKey  # optional for validation
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
@@ -55,8 +57,14 @@ app.add_middleware(
 
 # --- Request models (show up in OpenAPI and docs) ---
 class PubKeyRequest(BaseModel):
-    pubk: str
+    pubk: Optional[str] = None
     KPek: Optional[str] = None
+    KPdk: Optional[str] = None
+    client_pubk: Optional[str] = None  # Now optional for generic use
+
+
+class ServiceUserRequest(BaseModel):
+    client_pubk: str = Field(..., description="Base64-encoded client public signing key")
 
 
 class AddDeviceRequest(BaseModel):
@@ -86,17 +94,30 @@ async def create_service(serviceuuid: str = FastAPIPath(..., description="servic
 
 
 @app.post("/service/{serviceuuid}/user/new", tags=["signup"], summary="Create a new service user (svu)")
-async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: PubKeyRequest = None):
-    pubk = payload.pubk if payload else None
-    KPek = payload.KPek if payload and hasattr(payload, 'KPek') else None
-    if KPek is not None:
-        result = new_user_service_user(serviceuuid, pubk, KPek)
-        if isinstance(result, dict):
-            result["KPek"] = KPek
-            return result
-        return {"result": result, "KPek": KPek}
-    else:
-        return "KPek is required for SVU creation with current implementation. Please provide KPek in the request body.", 400
+async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: ServiceUserRequest = Body(...)):
+    client_pubk_b64 = payload.client_pubk
+
+    # validate base64 for client_pubk
+    try:
+        client_pubk_bytes = base64.b64decode(client_pubk_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="client_pubk must be a valid base64 string")
+
+    # optional: validate client_pubk is a valid public signing key
+    try:
+        VerifyKey(client_pubk_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="client_pubk is not a valid signing public key")
+
+    # call your business logic (unchanged)
+    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64)
+
+    # echo client_pubk back so the client saver can persist it
+    if isinstance(result, dict):
+        result["client_pubk"] = client_pubk_b64
+        return result
+
+    return {"result": result, "client_pubk": client_pubk_b64}
 
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")

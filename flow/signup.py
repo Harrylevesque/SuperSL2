@@ -195,7 +195,7 @@ def new_user_service(serviceuuid, pubk=None, keypairs=None):
 
 
 
-def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
+def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, keypairs=None):
     service_user_user = str(f"svu--{uuid.uuid4()}")
     directory = BASE_SAVE_DIR / "user" / serviceuuid
     filename = f"{service_user_user}.json"
@@ -205,7 +205,6 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
     words = select_words("internal/wordlist.txt", num_words)
     passphrase = create_passphrase(words)
     checksum = checksum_passphrase(passphrase)
-
 
     def get_local_ip():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -234,6 +233,8 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": pubk_value,
+            "KPek": KPek,
+            "client_pubk": client_pubk,
             "keypairs": keypairs if keypairs else {"error"},
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
@@ -286,6 +287,8 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
         "serviceuuid": serviceuuid,
         "svuUUID": service_user_user,
         "pubk": userfiledata["keychain"]["pubk"],
+        "KPek": KPek,
+        "client_pubk": client_pubk,
         "passphrase_words": words,
         #"passphrase_checksum": checksum
     }

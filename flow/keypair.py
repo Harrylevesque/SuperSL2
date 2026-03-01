@@ -1,22 +1,31 @@
-from kyber_py.ml_kem import ML_KEM_1024
-import hashlib
+from nacl.signing import VerifyKey
+from nacl.encoding import Base64Encoder
+from nacl.exceptions import BadSignatureError
+import os
 
 
-# Generate keypair
-ek, dk = ML_KEM_1024.keygen()  # ek: encapsulation key (public), dk: decapsulation key (private)
+# -----------------------------
+# Prepare public key for storage
+# (import safely from transport string)
+# -----------------------------
+def import_public_key(public_key_str: str) -> bytes:
+    return Base64Encoder.decode(public_key_str.encode())
 
 
+# -----------------------------
+# Generate authentication challenge
+# -----------------------------
+def generate_challenge() -> bytes:
+    return os.urandom(32)
 
-print("Encapsulation Key (Public):", ek)
-print("Decapsulation Key (Private):", dk)
 
-
-# Use the actual key bytes for encapsulation/decapsulation
-shared_key, ciphertext = ML_KEM_1024.encaps(ek)  # 32-byte shared_key, ciphertext ~1568 bytes for 1024
-
-# Decapsulate to check
-recovered_key = ML_KEM_1024.decaps(dk, ciphertext)
-
-# Verify it's "ok"
-assert shared_key == recovered_key, "Key mismatch!"
-print("Kyber-1024 check passed: keys match.")
+# -----------------------------
+# Verify signature
+# -----------------------------
+def verify_client_signature(public_key: bytes, challenge: bytes, signature: bytes) -> bool:
+    try:
+        verify_key = VerifyKey(public_key)
+        verify_key.verify(signature)
+        return True
+    except BadSignatureError:
+        return False
