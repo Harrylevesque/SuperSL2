@@ -26,7 +26,7 @@ from internal.recovery import checksum_checker
 from flow.workingfile import workingfile, update_workingfile_status
 from config import BASE_SAVE_DIR
 from flow.keymatch import get_pubk
-from flow.keypair import generate_challenge
+from flow.keypair import generate_challenge, verify_client_signature
 from flow.webauthn_flow import (
     register_start, register_finish, auth_start, auth_finish
 )
@@ -84,6 +84,10 @@ class CredentialPayload(BaseModel):
 
 class Step2Payload(BaseModel):
     pubkey: str
+
+class Step3_5Payload(BaseModel):
+    signature: str
+    challenge: str
 # --- Endpoints ---
 
 
@@ -188,8 +192,6 @@ async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional
 
     return working_file
 
-
-
 @app.post("/login/{con_uuid}/step/2")
 async def svu_step2(con_uuid: str, payload: dict = Body(...)):
     user_pubkey = payload.get("pubkey")
@@ -218,8 +220,98 @@ async def svu_step2(con_uuid: str, payload: dict = Body(...)):
 @app.get("/login/{con_uuid}/step/3")
 async def svu_step3(con_uuid: str):
     challenge = generate_challenge()
-    update_workingfile_status(con_uuid, "challenge_generated", "step3", time.time())
+    # Ensure challenge is a string for JSON serialization
+    if isinstance(challenge, bytes):
+        challenge = base64.b64encode(challenge).decode("utf-8")
+    update_workingfile_status(con_uuid, "challenge_generated", "keypair", time.time())
     return {"challenge": challenge, "time": time.time(), "status": "challenge_generated", "time_of_last_completion": time.time()}
+
+
+
+@app.post("/login/{con_uuid}/step/3.5")
+async def svu_step3_5(con_uuid: str, payload: Step3_5Payload):
+    signature = payload.signature
+    challenge = payload.challenge
+    logger.info(f"Step 3.5 called with con_uuid={con_uuid}, challenge={challenge}, signature={signature}")
+    session_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
+    if not session_path.exists():
+        logger.error(f"Session file not found: {session_path}")
+        raise HTTPException(status_code=404, detail="Session file not found")
+    with open(session_path, "r") as f:
+        session_data = json.load(f)
+        if isinstance(session_data, dict):
+            sv_uuid = session_data.get("sv_uuid")
+            svu_uuid = session_data.get("svu_uuid")
+        elif isinstance(session_data, list) and len(session_data) > 0 and isinstance(session_data[0], dict):
+            sv_uuid = session_data[0].get("sv_uuid")
+            svu_uuid = session_data[0].get("svu_uuid")
+        else:
+            logger.error(f"Invalid session file format: {session_data}")
+            raise HTTPException(status_code=400, detail="Invalid session file format")
+    logger.info(f"Extracted sv_uuid={sv_uuid}, svu_uuid={svu_uuid}")
+    if not sv_uuid or not svu_uuid:
+        logger.error(f"sv_uuid or svu_uuid missing in session file: sv_uuid={sv_uuid}, svu_uuid={svu_uuid}")
+        raise HTTPException(status_code=400, detail="sv_uuid or svu_uuid missing in session file")
+    user_path = BASE_SAVE_DIR / "user" / sv_uuid / f"{svu_uuid}.json"
+    if not user_path.exists():
+        logger.error(f"User file not found: {user_path}")
+        raise HTTPException(status_code=404, detail="User file not found")
+    with open(user_path, "r") as f:
+        user_data = json.load(f)
+        keychain = user_data.get("keychain", {})
+        client_pubk = keychain.get("client_pubk")
+        if not client_pubk:
+            logger.error(f"client_pubk not found in user file: {user_path}")
+            raise HTTPException(status_code=404, detail="client_pubk not found in user file")
+    logger.info(f"Extracted client_pubk={client_pubk}")
+    # Decode client_pubk from base64 and validate length
+    try:
+        client_pubk_bytes = base64.b64decode(client_pubk)
+    except Exception as e:
+        logger.error(f"client_pubk base64 decode error: {e}")
+        raise HTTPException(status_code=400, detail=f"client_pubk must be valid base64: {e}")
+    if len(client_pubk_bytes) != 32:
+        logger.error(f"client_pubk decoded length is {len(client_pubk_bytes)}, expected 32 bytes")
+        raise HTTPException(status_code=400, detail=f"client_pubk must decode to 32 bytes, got {len(client_pubk_bytes)} bytes")
+    logger.info(f"Decoded client_pubk_bytes={client_pubk_bytes.hex()}")
+    try:
+        challenge_bytes = base64.b64decode(challenge)
+        signature_bytes = base64.b64decode(signature)
+        logger.info(f"Decoded challenge_bytes={challenge_bytes.hex()[:64]}... signature_bytes={signature_bytes.hex()[:64]}...")
+    except Exception as e:
+        logger.error(f"Base64 decode error: {e}")
+        raise HTTPException(status_code=400, detail=f"Challenge or signature must be valid base64: {e}")
+    try:
+        keypair = verify_client_signature(client_pubk_bytes, challenge_bytes, signature_bytes)
+        logger.info(f"Signature verification result: {keypair}")
+    except Exception as e:
+        logger.error(f"Signature verification error: {e}")
+        raise HTTPException(status_code=400, detail=f"Signature verification failed: {e}")
+
+    update_workingfile_status(con_uuid, "keypair_complete", "keypair", time.time())
+
+    return {
+            "signature_valid": keypair,
+
+            "time_of_last_completion": time.time(),
+
+            "debug": {
+                "con_uuid": con_uuid,
+                "sv_uuid": sv_uuid,
+                "svu_uuid": svu_uuid,
+                "client_pubk": client_pubk,
+                "client_pubk_bytes_hex": client_pubk_bytes.hex(),
+                "challenge_b64": challenge,
+                "signature_b64": signature,
+                "challenge_bytes_hex": challenge_bytes.hex(),
+                "signature_bytes_hex": signature_bytes.hex()
+
+                }
+            }
+
+
+
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
