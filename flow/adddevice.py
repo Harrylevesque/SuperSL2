@@ -1,9 +1,12 @@
-import os, json, uuid, time
+import json, uuid, time
+from pathlib import Path
+
+from config import BASE_SAVE_DIR
 
 def enroll_device(userUUID, privkeyD, ip):
-    directory = f"storage/user"
-    filepath = os.path.join(directory, f"{userUUID}.json")
-    if not os.path.exists(filepath):
+    directory = BASE_SAVE_DIR / "user"
+    filepath = directory / f"{userUUID}.json"
+    if not filepath.exists():
         return {"error": "User not found"}
 
     with open(filepath, "r") as f:

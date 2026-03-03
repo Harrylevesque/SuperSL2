@@ -1,12 +1,14 @@
-import uuid, time, os, json
+import uuid, time, json
+
+from config import BASE_SAVE_DIR
 
 def new_service(useruuid, service_name, service_description):
-    directory = f"storage/user/{useruuid}/services"
-    os.makedirs(directory, exist_ok=True)
+    directory = BASE_SAVE_DIR / "user" / useruuid / "services"
+    directory.mkdir(parents=True, exist_ok=True)
     serviceUUID = f"svc--{uuid.uuid4()}"
-    filepath = os.path.join(directory, f"{serviceUUID}.json")
+    filepath = directory / f"{serviceUUID}.json"
 
-    if os.path.exists(filepath):
+    if filepath.exists():
         return {"error": "Service already exists"}
 
     service_data = {

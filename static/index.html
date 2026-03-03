@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>WebAuthn Demo</title>
+</head>
+<body>
+<h1>WebAuthn Demo (/webauth)</h1>
+<input id="username" type="text" placeholder="Enter username" style="margin-bottom:10px;" />
+<button onclick="register()">Register</button>
+<button onclick="authenticate()">Authenticate</button>
+<div id="status"></div>
+
+<script type="module">
+import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
+
+const BASE_URL = 'https://service.mfaip.harrylevesque.dev/webauthn';
+
+function status(msg, color='black') {
+  document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
+}
+
+function getUserId() {
+  return document.getElementById('username').value.trim();
+}
+
+async function register() {
+  const USER_ID = getUserId();
+  if (!USER_ID) {
+    status('Please enter a username.', 'red');
+    return;
+  }
+  try {
+    status('Starting registration...');
+    const resp = await fetch(`${BASE_URL}/register/start?user_id=${USER_ID}`);
+    const opts = await resp.json();
+    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+      status('Registration failed: Invalid options from server', 'red');
+      return;
+    }
+    let attResp;
+    try {
+      attResp = await startRegistration(opts);
+    } catch (e) { status('Registration failed: ' + e, 'red'); return; }
+    const verification = await fetch(`${BASE_URL}/register/finish`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(attResp)
+    });
+    const result = await verification.json();
+    status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
+  } catch (e) {
+    status('Error: ' + e.message, 'red');
+  }
+}
+
+async function authenticate() {
+  const USER_ID = getUserId();
+  if (!USER_ID) {
+    status('Please enter a username.', 'red');
+    return;
+  }
+  try {
+    status('Starting authentication...');
+    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${USER_ID}`);
+    const opts = await resp.json();
+    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+      status('Auth failed: Invalid options from server', 'red');
+      return;
+    }
+    let attResp;
+    try {
+      attResp = await startAuthentication(opts);
+    } catch (e) { status('Auth failed: ' + e, 'red'); return; }
+    const verification = await fetch(`${BASE_URL}/auth/finish`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(attResp)
+    });
+    const result = await verification.json();
+    status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
+  } catch (e) {
+    status('Error: ' + e.message, 'red');
+  }
+}
+
+window.register = register;
+window.authenticate = authenticate;
+</script>
+</body>
+</html>

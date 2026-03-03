@@ -2,19 +2,37 @@
 Rewritten main.py: single FastAPI app, request models for OpenAPI, and all existing endpoints
 preserved and annotated so /docs shows complete schemas.
 """
-from fastapi import FastAPI, HTTPException, Path as FastAPIPath
+from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import Request
+
+from pydantic import BaseModel, Field
 from typing import Optional
 import os
 import json
 from pathlib import Path
+import logging
+import dotenv
+import base64
+from nacl.signing import VerifyKey  # optional for validation
+import time
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
 from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
-from flow.ssh import step1_content, working_file
+from flow.workingfile import workingfile, update_workingfile_status
+from config import BASE_SAVE_DIR
+from flow.keymatch import get_pubk
+from flow.keypair import generate_challenge
+from flow.webauthn_flow import (
+    register_start, register_finish, auth_start, auth_finish
+)
+
+# Load environment variables from .env file
+dotenv.load_dotenv()
 
 app = FastAPI(
     title="SuperSL2 API",
@@ -23,6 +41,10 @@ app = FastAPI(
     openapi_url="/openapi.json",
     docs_url="/docs",
 )
+
+# set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 app.add_middleware(
@@ -37,7 +59,14 @@ app.add_middleware(
 
 # --- Request models (show up in OpenAPI and docs) ---
 class PubKeyRequest(BaseModel):
-    pubk: str
+    pubk: Optional[str] = None
+    KPek: Optional[str] = None
+    KPdk: Optional[str] = None
+    client_pubk: Optional[str] = None  # Now optional for generic use
+
+
+class ServiceUserRequest(BaseModel):
+    client_pubk: str = Field(..., description="Base64-encoded client public signing key")
 
 
 class AddDeviceRequest(BaseModel):
@@ -45,10 +74,17 @@ class AddDeviceRequest(BaseModel):
     ip: Optional[str] = None
 
 
+class Username(BaseModel):
+    username: str
+
+class CredentialPayload(BaseModel):
+    username: str
+    credential: dict
+
+
+class Step2Payload(BaseModel):
+    pubkey: str
 # --- Endpoints ---
-@app.get("/", tags=["root"])
-async def root():
-    return {"message": "Hello World"}
 
 
 @app.post("/serviceuser/new", tags=["signup"], summary="Create a new top-level user")
@@ -63,9 +99,30 @@ async def create_service(serviceuuid: str = FastAPIPath(..., description="servic
 
 
 @app.post("/service/{serviceuuid}/user/new", tags=["signup"], summary="Create a new service user (svu)")
-async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: PubKeyRequest = None):
-    pubk = payload.pubk if payload else None
-    return new_user_service_user(serviceuuid, pubk)
+async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: ServiceUserRequest = Body(...)):
+    client_pubk_b64 = payload.client_pubk
+
+    # validate base64 for client_pubk
+    try:
+        client_pubk_bytes = base64.b64decode(client_pubk_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="client_pubk must be a valid base64 string")
+
+    # optional: validate client_pubk is a valid public signing key
+    try:
+        VerifyKey(client_pubk_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="client_pubk is not a valid signing public key")
+
+    # call your business logic (unchanged)
+    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64)
+
+    # echo client_pubk back so the client saver can persist it
+    if isinstance(result, dict):
+        result["client_pubk"] = client_pubk_b64
+        return result
+
+    return {"result": result, "client_pubk": client_pubk_b64}
 
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
@@ -119,19 +176,110 @@ async def findSVU(sv_uuid: str, svu_uuid: str):
 @app.get("/service/{sv_uuid}/user/{svu_uuid}/{con_uuid}/step/1")
 async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional[str] = None):
     # build working file data (uses flow.ssh.working_file)
-    workingfile = working_file(
-        con_uuid=con_uuid,
-        svu_uuid=svu_uuid,
-        sv_uuid=sv_uuid,
-        pubkey=pubkey,
-    )
+    working_file = workingfile(sv_uuid, svu_uuid, con_uuid)
 
     # write to storage/session/<con_uuid>.json, creating directories if needed
-    con_uuid_path = Path("storage") / "session" / f"{con_uuid}.json"
+    con_uuid_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
     con_uuid_path.parent.mkdir(parents=True, exist_ok=True)
-    con_uuid_path.write_text(json.dumps(workingfile, indent=2, ensure_ascii=False), encoding="utf-8")
+    con_uuid_path.write_text(json.dumps(working_file, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Update status and time_of_last_completion for step1
+    update_workingfile_status(con_uuid, "requested", "initialise_connection", time.time())
+
+    return working_file
 
 
 
+@app.post("/login/{con_uuid}/step/2")
+async def svu_step2(con_uuid: str, payload: dict = Body(...)):
+    user_pubkey = payload.get("pubkey")
 
-    return step1_content
+    with open(BASE_SAVE_DIR / "session" / f"{con_uuid}.json", "r") as f:
+        data = json.load(f)
+        if isinstance(data, dict):
+            sv_uuid = data.get("sv_uuid")
+            svu_uuid = data.get("svu_uuid")
+        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            sv_uuid = data[0].get("sv_uuid")
+            svu_uuid = data[0].get("svu_uuid")
+        else:
+            raise ValueError("Invalid session file format")
+    pubk_result = get_pubk(sv_uuid=sv_uuid, svu_uuid=svu_uuid)
+
+    if pubk_result == user_pubkey:
+        update_workingfile_status(con_uuid, "awaiting_webauthn", "keymatch", time.time())
+        return {"status": "awaiting_webauthn", "time_of_last_completion": time.time(), "match": True, "time": time.time()}
+    else:
+        update_workingfile_status(con_uuid, "key_mismatch", "awaiting_webauthn", time.time())
+        return {"success": False, "message": "key missmatch", "time": time.time()}
+
+
+
+@app.get("/login/{con_uuid}/step/3")
+async def svu_step3(con_uuid: str):
+    challenge = generate_challenge()
+    update_workingfile_status(con_uuid, "challenge_generated", "step3", time.time())
+    return {"challenge": challenge, "time": time.time(), "status": "challenge_generated", "time_of_last_completion": time.time()}
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", include_in_schema=False)
+async def index():
+    index_path = Path("static") / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path), media_type="text/html")
+
+@app.get("/webauth/register/start")
+async def reg_start(user_id: str = "user1"):
+    return await register_start(user_id)
+
+@app.post("/webauth/register/finish")
+async def reg_finish(request: Request):
+    return await register_finish(await request.json())
+
+@app.get("/webauth/auth/start")
+async def a_start(user_id: str = "user1"):
+    return await auth_start(user_id)
+
+@app.post("/webauth/auth/finish")
+async def a_finish(request: Request):
+    return await auth_finish(await request.json())
+
+# Ensure /config.json is always available at the root, regardless of subpath or mount
+@app.get("/config.json", include_in_schema=False)
+def get_config():
+    base_url = os.environ.get("host")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="host not set in .env")
+    return JSONResponse({"BASE_URL": base_url})
+
+# serve favicon if present
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    favicon_path = Path("static") / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path), media_type="image/x-icon")
+    raise HTTPException(status_code=404, detail="favicon not found")
+
+
+# Mount the static directory (add after app = FastAPI(...))
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Add an endpoint that serves `static/index.html` at /index.html
+@app.get("/index.html", include_in_schema=False)
+async def serve_index():
+    index_path = Path("static") / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path), media_type="text/html")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )

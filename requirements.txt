@@ -1,4 +1,5 @@
 fastapi
 uvicorn[standard]
 requests
-
+python-dotenv>=1.0.0
+webauthn

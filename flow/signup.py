@@ -2,13 +2,16 @@ import uuid, time, os, json, random, secrets, socket, requests
 
 from internal.recovery import checksum_passphrase, select_words, create_passphrase
 
+from pathlib import Path
+from config import BASE_SAVE_DIR
+
 
 
 def new_user(pubk, keypairs=None):
     userUUID = str(f"u--{uuid.uuid4()}")
-    directory = "storage/user"
+    directory = BASE_SAVE_DIR / "user"
     filename = f"{userUUID}.json"
-    filepath = os.path.join(directory, filename)
+    filepath = directory / filename
 
     num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
@@ -75,9 +78,20 @@ def new_user(pubk, keypairs=None):
         ],
     }
 
-    os.makedirs(directory, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
+
+
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4)
+        def make_json_serializable(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            if isinstance(obj, dict):
+                return {k: make_json_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [make_json_serializable(v) for v in obj]
+            return obj
+
+        json.dump(make_json_serializable(userfiledata), json_file, indent=4)
 
     return {
         "status": "success",
@@ -89,14 +103,13 @@ def new_user(pubk, keypairs=None):
 
 
 
+
 def new_user_service(serviceuuid, pubk=None, keypairs=None):
     # ignore incoming serviceuuid and generate a new one (keeps previous behaviour)
     serviceuuid = str(f"sv--{uuid.uuid4()}")
-    directory = f"storage/user/{serviceuuid}"
+    directory = BASE_SAVE_DIR / "user" / serviceuuid
     filename = f"{serviceuuid}.json"
-    filepath = os.path.join(directory, filename)
-    dispatch_server = "http://127.0.0.1:8002"
-
+    filepath = directory / filename
     num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
     passphrase = create_passphrase(words)
@@ -118,7 +131,6 @@ def new_user_service(serviceuuid, pubk=None, keypairs=None):
 
     def get_public_ip():
         localip = requests.get("https://api.ipify.org").text
-        requests.get(f"{dispatch_server}/service/create/{serviceuuid}/{localip}")
         try:
             return localip
         except Exception:
@@ -169,7 +181,7 @@ def new_user_service(serviceuuid, pubk=None, keypairs=None):
         ],
     }
 
-    os.makedirs(directory, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w") as json_file:
         json.dump(userfiledata, json_file, indent=4)
 
@@ -182,17 +194,17 @@ def new_user_service(serviceuuid, pubk=None, keypairs=None):
     }
 
 
-def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
+
+def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, keypairs=None):
     service_user_user = str(f"svu--{uuid.uuid4()}")
-    directory = f"storage/user/{serviceuuid}"
+    directory = BASE_SAVE_DIR / "user" / serviceuuid
     filename = f"{service_user_user}.json"
-    filepath = os.path.join(directory, filename)
+    filepath = directory / filename
 
     num_words = 24
     words = select_words("internal/wordlist.txt", num_words)
     passphrase = create_passphrase(words)
     checksum = checksum_passphrase(passphrase)
-
 
     def get_local_ip():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -221,6 +233,8 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
             "location": str(f"kchin--{uuid.uuid4()}"),
             "createdAt": int(time.time()),
             "pubk": pubk_value,
+            "KPek": KPek,
+            "client_pubk": client_pubk,
             "keypairs": keypairs if keypairs else {"error"},
             #"passphrase": passphrase,
             "passphrase_checksum": checksum,
@@ -256,15 +270,25 @@ def new_user_service_user(serviceuuid, pubk=None, keypairs=None):
         ],
     }
 
-    os.makedirs(directory, exist_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
+    def make_json_serializable(obj):
+        if isinstance(obj, set):
+            return list(obj)
+        if isinstance(obj, dict):
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [make_json_serializable(v) for v in obj]
+        return obj
     with open(filepath, "w") as json_file:
-        json.dump(userfiledata, json_file, indent=4, default=list)
+        json.dump(make_json_serializable(userfiledata), json_file, indent=4)
 
     return {
         "status": "success",
         "serviceuuid": serviceuuid,
         "svuUUID": service_user_user,
         "pubk": userfiledata["keychain"]["pubk"],
+        "KPek": KPek,
+        "client_pubk": client_pubk,
         "passphrase_words": words,
         #"passphrase_checksum": checksum
     }
