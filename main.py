@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request
 
-
 from pydantic import BaseModel, Field
 from typing import Optional
 import os
@@ -18,13 +17,16 @@ import logging
 import dotenv
 import base64
 from nacl.signing import VerifyKey  # optional for validation
+import time
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
 from flow.pubkey import update_service_pubkey, update_service_user_pubkey
 from internal.recovery import checksum_checker
-from flow.ssh import step1_content, working_file
+from flow.workingfile import workingfile, update_workingfile_status
 from config import BASE_SAVE_DIR
+from flow.keymatch import get_pubk
+from flow.keypair import generate_challenge
 from flow.webauthn_flow import (
     register_start, register_finish, auth_start, auth_finish
 )
@@ -79,6 +81,9 @@ class CredentialPayload(BaseModel):
     username: str
     credential: dict
 
+
+class Step2Payload(BaseModel):
+    pubkey: str
 # --- Endpoints ---
 
 
@@ -171,26 +176,50 @@ async def findSVU(sv_uuid: str, svu_uuid: str):
 @app.get("/service/{sv_uuid}/user/{svu_uuid}/{con_uuid}/step/1")
 async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional[str] = None):
     # build working file data (uses flow.ssh.working_file)
-    workingfile = working_file(
-        con_uuid=con_uuid,
-        svu_uuid=svu_uuid,
-        sv_uuid=sv_uuid,
-        pubkey=pubkey,
-    )
+    working_file = workingfile(sv_uuid, svu_uuid, con_uuid)
 
     # write to storage/session/<con_uuid>.json, creating directories if needed
     con_uuid_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
     con_uuid_path.parent.mkdir(parents=True, exist_ok=True)
-    con_uuid_path.write_text(json.dumps(workingfile, indent=2, ensure_ascii=False), encoding="utf-8")
+    con_uuid_path.write_text(json.dumps(working_file, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Update status and time_of_last_completion for step1
+    update_workingfile_status(con_uuid, "requested", "initialise_connection", time.time())
+
+    return working_file
 
 
 
+@app.post("/login/{con_uuid}/step/2")
+async def svu_step2(con_uuid: str, payload: dict = Body(...)):
+    user_pubkey = payload.get("pubkey")
 
-    return step1_content
+    with open(BASE_SAVE_DIR / "session" / f"{con_uuid}.json", "r") as f:
+        data = json.load(f)
+        if isinstance(data, dict):
+            sv_uuid = data.get("sv_uuid")
+            svu_uuid = data.get("svu_uuid")
+        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            sv_uuid = data[0].get("sv_uuid")
+            svu_uuid = data[0].get("svu_uuid")
+        else:
+            raise ValueError("Invalid session file format")
+    pubk_result = get_pubk(sv_uuid=sv_uuid, svu_uuid=svu_uuid)
+
+    if pubk_result == user_pubkey:
+        update_workingfile_status(con_uuid, "awaiting_webauthn", "keymatch", time.time())
+        return {"status": "awaiting_webauthn", "time_of_last_completion": time.time(), "match": True, "time": time.time()}
+    else:
+        update_workingfile_status(con_uuid, "key_mismatch", "awaiting_webauthn", time.time())
+        return {"success": False, "message": "key missmatch", "time": time.time()}
 
 
 
-
+@app.get("/login/{con_uuid}/step/3")
+async def svu_step3(con_uuid: str):
+    challenge = generate_challenge()
+    update_workingfile_status(con_uuid, "challenge_generated", "step3", time.time())
+    return {"challenge": challenge, "time": time.time(), "status": "challenge_generated", "time_of_last_completion": time.time()}
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
