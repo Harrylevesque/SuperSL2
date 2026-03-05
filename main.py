@@ -26,7 +26,11 @@ from internal.recovery import checksum_checker
 from flow.workingfile import workingfile, update_workingfile_status
 from config import BASE_SAVE_DIR
 from flow.keymatch import get_pubk
-from flow.keypair import generate_challenge, verify_client_signature
+from flow.keypair import generate_challenge as generate_keypair_challenge, verify_client_signature
+from flow.otp import (
+    generate_challenge as generate_otp_challenge,
+    verify_client_signature as verify_otp_signature,
+)
 from flow.webauthn_flow import (
     register_start, register_finish, auth_start, auth_finish
 )
@@ -67,6 +71,7 @@ class PubKeyRequest(BaseModel):
 
 class ServiceUserRequest(BaseModel):
     client_pubk: str = Field(..., description="Base64-encoded client public signing key")
+    otp_pubK: str = Field(None, description="OTP public key to store and return to the client")
 
 
 class AddDeviceRequest(BaseModel):
@@ -88,6 +93,11 @@ class Step2Payload(BaseModel):
 class Step3_5Payload(BaseModel):
     signature: str
     challenge: str
+
+class Step4_5Payload(BaseModel):
+    payload_json: str
+    signature: str
+
 # --- Endpoints ---
 
 
@@ -105,6 +115,7 @@ async def create_service(serviceuuid: str = FastAPIPath(..., description="servic
 @app.post("/service/{serviceuuid}/user/new", tags=["signup"], summary="Create a new service user (svu)")
 async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., description="Parent service UUID"), payload: ServiceUserRequest = Body(...)):
     client_pubk_b64 = payload.client_pubk
+    otp_pubk = payload.otp_pubK
 
     # validate base64 for client_pubk
     try:
@@ -118,15 +129,15 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
     except Exception:
         raise HTTPException(status_code=400, detail="client_pubk is not a valid signing public key")
 
-    # call your business logic (unchanged)
-    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64)
+    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk)
 
-    # echo client_pubk back so the client saver can persist it
+    # echo keys back so the client saver can persist them
     if isinstance(result, dict):
         result["client_pubk"] = client_pubk_b64
+        result["otp_pubK"] = otp_pubk
         return result
 
-    return {"result": result, "client_pubk": client_pubk_b64}
+    return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk}
 
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
@@ -219,7 +230,7 @@ async def svu_step2(con_uuid: str, payload: dict = Body(...)):
 
 @app.get("/login/{con_uuid}/step/3")
 async def svu_step3(con_uuid: str):
-    challenge = generate_challenge()
+    challenge = generate_keypair_challenge()
     # Ensure challenge is a string for JSON serialization
     if isinstance(challenge, bytes):
         challenge = base64.b64encode(challenge).decode("utf-8")
@@ -311,11 +322,83 @@ async def svu_step3_5(con_uuid: str, payload: Step3_5Payload):
 
 
 
+@app.get("/login/{con_uuid}/step/4")
+async def otp(con_uuid: str):
+    payload_json = generate_otp_challenge()
+    payload = json.loads(payload_json)
+    # Keep both raw payload_json and flattened fields for client compatibility.
+    return {
+        "payload_json": payload_json,
+        "challenge": payload.get("challenge"),
+        "issued_at": payload.get("issued_at"),
+        "challenge_id": payload.get("challenge_id"),
+        "con_uuid": con_uuid,
+    }
 
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
+@app.post("/login/{con_uuid}/step/4.5")
+async def otp_verify(con_uuid: str, payload: Step4_5Payload):
+    payload_json = payload.payload_json
+    signature_b64 = payload.signature
+
+    session_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
+    if not session_path.exists():
+        raise HTTPException(status_code=404, detail="Session file not found")
+
+    with open(session_path, "r") as f:
+        session_data = json.load(f)
+
+    if isinstance(session_data, dict):
+        sv_uuid = session_data.get("sv_uuid")
+        svu_uuid = session_data.get("svu_uuid")
+    elif isinstance(session_data, list) and len(session_data) > 0 and isinstance(session_data[0], dict):
+        sv_uuid = session_data[0].get("sv_uuid")
+        svu_uuid = session_data[0].get("svu_uuid")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid session file format")
+
+    if not sv_uuid or not svu_uuid:
+        raise HTTPException(status_code=400, detail="sv_uuid or svu_uuid missing in session file")
+
+    user_path = BASE_SAVE_DIR / "user" / sv_uuid / f"{svu_uuid}.json"
+    if not user_path.exists():
+        raise HTTPException(status_code=404, detail="User file not found")
+
+    with open(user_path, "r") as f2:
+        user_data = json.load(f2)
+
+    keychain = user_data.get("keychain", {})
+    otp_pubk_b64 = keychain.get("otp_pubK")
+    if not otp_pubk_b64:
+        raise HTTPException(status_code=404, detail="otp_pubK not found in user file")
+
+    try:
+        otp_pubk = base64.b64decode(otp_pubk_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="otp_pubK must be a valid base64 string")
+
+    try:
+        signature = base64.b64decode(signature_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="signature must be a valid base64 string")
+
+    ok = verify_otp_signature(otp_pubk, payload_json, signature)
+    if ok == True:
+        update_workingfile_status(con_uuid, "otp_complete", "otp", time.time())
+
+    return {"signature_valid": ok, "time_of_last_completion": time.time(), "status": "complete" if ok else "faild"}
+
+
+
+
+
+
+
+
+'''# Mount static files
+@app.mount("/static", StaticFiles(directory="static"), name="static")
+'''
 @app.get("/", include_in_schema=False)
 async def index():
     index_path = Path("static") / "index.html"

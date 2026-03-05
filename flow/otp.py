@@ -1,65 +1,77 @@
-# python
+from nacl.signing import VerifyKey
+from nacl.encoding import Base64Encoder
+from nacl.exceptions import BadSignatureError
+import os
 import time
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.exceptions import InvalidSignature
-import typer
+import json
+import hashlib
 
-# === CONFIGURABLE PARAMETERS ===
-INTERVAL = 5      # seconds per time bucket
-TOLERANCE = 2       # ±bucket tolerance
 
-def server_verify_single_use_otp(
-    nonce: str,
-    pk_hex: str,
-    sig_hex: str,
-    interval: int = INTERVAL,
-    tolerance: int = TOLERANCE,
-):
-    """
-    Verifies a single-use OTP using the public key.
+# Replay cache: challenge_id -> expiry_time
+_used_challenges = {}
 
-    Args:
-        nonce (str): received nonce from client (hex or plain)
-        pk_hex (str): public key as hex string (32 bytes -> 64 hex chars)
-        sig_hex (str): signature as hex string (64 bytes -> 128 hex chars)
-        interval (int): seconds per bucket
-        tolerance (int): ±bucket tolerance
 
-    Returns:
-        bool: True if valid, False otherwise (also prints result)
-    """
-    # Convert hex inputs to bytes, handle invalid hex
+
+def import_public_key(public_key_str: str) -> bytes:
+    return Base64Encoder.decode(public_key_str.encode())
+
+
+
+
+def generate_challenge(window_seconds=3) -> str:
+    challenge = os.urandom(64)
+    issued_at = time.monotonic()
+
+    challenge_id = hashlib.sha256(challenge).hexdigest()
+    _used_challenges[challenge_id] = issued_at + window_seconds
+
+    payload = {
+        "challenge": Base64Encoder.encode(challenge).decode(),
+        "issued_at": issued_at,
+        "challenge_id": challenge_id
+    }
+
+    return json.dumps(payload)
+
+
+
+def _cleanup_cache():
+    now = time.monotonic()
+    expired = [cid for cid, exp in _used_challenges.items() if exp <= now]
+    for cid in expired:
+        del _used_challenges[cid]
+
+
+
+def verify_client_signature(otp_pubk: bytes, payload_json: str, signature: bytes, window_seconds=30) -> bool:
     try:
-        pk_bytes = bytes.fromhex(pk_hex)
-    except ValueError:
-        typer.echo("invalid: public key is not valid hex")
-        raise typer.Exit(code=2)
+        _cleanup_cache()
 
-    try:
-        signature = bytes.fromhex(sig_hex)
-    except ValueError:
-        typer.echo("invalid: signature is not valid hex")
-        raise typer.Exit(code=2)
+        payload = json.loads(payload_json)
 
-    if len(pk_bytes) != 32:
-        typer.echo(f"invalid: public key length {len(pk_bytes)} != 32")
-        raise typer.Exit(code=2)
-    if len(signature) not in (64,):  # ed25519 signatures are 64 bytes
-        typer.echo(f"invalid: signature length {len(signature)} != 64")
-        raise typer.Exit(code=2)
+        challenge = Base64Encoder.decode(payload["challenge"].encode())
+        issued_at = payload["issued_at"]
+        challenge_id = payload["challenge_id"]
 
-    # Reconstruct public key from bytes
-    pk = ed25519.Ed25519PublicKey.from_public_bytes(pk_bytes)
+        now = time.monotonic()
 
-    now = int(time.time()) // interval
-    for bucket in range(now - tolerance, now + tolerance + 1):
-        msg = f"{bucket}:{nonce}".encode()
-        try:
-            pk.verify(signature, msg)
-            typer.echo("valid")
-            return True
-        except InvalidSignature:
-            continue
+        # Expiry check
+        if now - issued_at > window_seconds:
+            return False
 
-    typer.echo("invalid")
-    return False
+        # Replay check
+        if challenge_id not in _used_challenges:
+            return False
+
+        # One-time use
+        del _used_challenges[challenge_id]
+
+        message = challenge + str(issued_at).encode()
+
+        verify_key = VerifyKey(otp_pubk)
+        verify_key.verify(signature)
+
+        return True
+
+    except (BadSignatureError, KeyError, ValueError):
+        return False
