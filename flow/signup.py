@@ -195,7 +195,7 @@ def new_user_service(serviceuuid, pubk=None, keypairs=None):
 
 
 
-def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, keypairs=None):
+def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, keypairs=None, otp_pubK=None):
     service_user_user = str(f"svu--{uuid.uuid4()}")
     directory = BASE_SAVE_DIR / "user" / serviceuuid
     filename = f"{service_user_user}.json"
@@ -237,7 +237,9 @@ def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, k
             "client_pubk": client_pubk,
             "keypairs": keypairs if keypairs else {"error"},
             #"passphrase": passphrase,
-            "passphrase_checksum": checksum,
+            #"passphrase_checksum": checksum,
+            "otp_pubK": otp_pubK,
+            "otp_pubk": otp_pubK,
             "privD": [
                 {
                     "privkeyD": "sample+changeme",
@@ -289,6 +291,7 @@ def new_user_service_user(serviceuuid, pubk=None, KPek=None, client_pubk=None, k
         "pubk": userfiledata["keychain"]["pubk"],
         "KPek": KPek,
         "client_pubk": client_pubk,
-        "passphrase_words": words,
+        "otp_pubK": otp_pubK,
+        #"passphrase_words": words,
         #"passphrase_checksum": checksum
     }
