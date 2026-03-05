@@ -11,6 +11,8 @@ import dotenv
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
+import re
+import base64
 
 
 dotenv.load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -65,6 +67,85 @@ def resolve_webauthn_config(request: Any | None = None) -> dict:
     }
 
 
+def _camel_to_snake_key(key: str) -> str:
+    # common WebAuthn camelCase -> snake_case mappings preserved
+    # e.g., rawId -> raw_id, clientDataJSON -> client_data_json
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', key)
+    s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    return s2
+
+
+def _transform_keys(obj):
+    if isinstance(obj, dict):
+        new = {}
+        for k, v in obj.items():
+            new_k = _camel_to_snake_key(k)
+            new[new_k] = _transform_keys(v)
+        return new
+    elif isinstance(obj, list):
+        return [_transform_keys(v) for v in obj]
+    else:
+        return obj
+
+
+def _b64url_to_bytes(s: str) -> bytes:
+    if s is None:
+        return s
+    if isinstance(s, bytes):
+        return s
+    if not isinstance(s, str):
+        return s
+    # Add padding if missing
+    s2 = s.replace('-', '+').replace('_', '/')
+    padding = '=' * (-len(s2) % 4)
+    try:
+        return base64.b64decode(s2 + padding)
+    except Exception:
+        # fallback to urlsafe_b64decode
+        return base64.urlsafe_b64decode(s + padding)
+
+
+def _normalize_webauthn_credential(d: dict) -> dict:
+    # Decode common fields from base64url to bytes where appropriate
+    if not isinstance(d, dict):
+        return d
+    out = dict(d)  # shallow copy
+    if 'raw_id' in out and isinstance(out['raw_id'], str):
+        out['raw_id'] = _b64url_to_bytes(out['raw_id'])
+    # response may contain binary fields
+    resp = out.get('response')
+    if isinstance(resp, dict):
+        r = dict(resp)
+        if 'attestation_object' in r and isinstance(r['attestation_object'], str):
+            r['attestation_object'] = _b64url_to_bytes(r['attestation_object'])
+        if 'client_data_json' in r and isinstance(r['client_data_json'], str):
+            r['client_data_json'] = _b64url_to_bytes(r['client_data_json'])
+        # authentication response fields
+        if 'authenticator_data' in r and isinstance(r['authenticator_data'], str):
+            r['authenticator_data'] = _b64url_to_bytes(r['authenticator_data'])
+        if 'signature' in r and isinstance(r['signature'], str):
+            r['signature'] = _b64url_to_bytes(r['signature'])
+        if 'user_handle' in r and isinstance(r['user_handle'], str):
+            # user_handle may be base64url or plain; attempt decode
+            try:
+                r['user_handle'] = _b64url_to_bytes(r['user_handle'])
+            except Exception:
+                pass
+        out['response'] = r
+    # allow_credentials: list of descriptors with id base64url
+    if 'allow_credentials' in out and isinstance(out['allow_credentials'], list):
+        new_list = []
+        for item in out['allow_credentials']:
+            if isinstance(item, dict) and 'id' in item and isinstance(item['id'], str):
+                it = dict(item)
+                it['id'] = _b64url_to_bytes(it['id'])
+                new_list.append(it)
+            else:
+                new_list.append(item)
+        out['allow_credentials'] = new_list
+    return out
+
+
 async def register_start(user_id: str, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
@@ -91,8 +172,23 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
-        # Build model using parse_raw so incoming camelCase keys (e.g., rawId) are handled
-        credential = RegistrationCredential.parse_raw(json.dumps(body))
+        # log keys shape for debugging (don't log full binary/blobs)
+        try:
+            keys = list(body.keys()) if isinstance(body, dict) else [type(body).__name__]
+            logger.info(f"register_finish called for user_id={user_id}, body_keys={keys}")
+        except Exception:
+            logger.info("register_finish called, unable to enumerate body keys")
+        # Build model using parse_raw if available; otherwise convert camelCase keys
+        try:
+            if hasattr(RegistrationCredential, 'parse_raw'):
+                credential = RegistrationCredential.parse_raw(json.dumps(body))
+            else:
+                transformed = _transform_keys(body)
+                transformed = _normalize_webauthn_credential(transformed)
+                credential = RegistrationCredential(**transformed)
+        except Exception as e:
+            logger.error(f"Failed to construct RegistrationCredential: {e}")
+            raise
         challenge = CHALLENGES.get(user_id)
         if not challenge:
             logger.warning(f"No challenge found for user {user_id}")
@@ -143,8 +239,22 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
-        # Build model using parse_raw so incoming camelCase keys are handled
-        cred = AuthenticationCredential.parse_raw(json.dumps(body))
+        try:
+            keys = list(body.keys()) if isinstance(body, dict) else [type(body).__name__]
+            logger.info(f"auth_finish called for user_id={user_id}, body_keys={keys}")
+        except Exception:
+            logger.info("auth_finish called, unable to enumerate body keys")
+        # Build model using parse_raw if available; otherwise convert camelCase keys
+        try:
+            if hasattr(AuthenticationCredential, 'parse_raw'):
+                cred = AuthenticationCredential.parse_raw(json.dumps(body))
+            else:
+                transformed = _transform_keys(body)
+                transformed = _normalize_webauthn_credential(transformed)
+                cred = AuthenticationCredential(**transformed)
+        except Exception as e:
+            logger.error(f"Failed to construct AuthenticationCredential: {e}")
+            raise
         challenge = CHALLENGES.get(user_id)
         cred_data = CREDENTIALS.get(user_id)
         if not challenge or not cred_data:
