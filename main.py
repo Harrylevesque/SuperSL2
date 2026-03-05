@@ -393,7 +393,8 @@ async def otp_verify(con_uuid: str, payload: Step4_5Payload):
 
 
 # Mount static files
-@app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 @app.get("/", include_in_schema=False)
 async def index():
     index_path = Path("static") / "index.html"
