@@ -8,12 +8,18 @@ import json
 import os
 import logging
 import dotenv
+from urllib.parse import urlparse
+
 
 dotenv.load_dotenv()
 host_env = os.environ.get("host")
 if not host_env:
     raise RuntimeError("host not set in .env")
-RP_ID = 'service.mfaip.harrylevesque.dev'
+
+
+parsed = urlparse(host_env)
+RP_ID = parsed.hostname  # e.g., 'localhost' [code:1]
+
 RP_NAME = 'multi factor authentication ststem in python to replace current systems'
 ORIGIN = host_env
 
