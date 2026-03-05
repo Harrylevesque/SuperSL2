@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from typing import Any
 import re
 import base64
+import inspect
 
 
 dotenv.load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -146,6 +147,26 @@ def _normalize_webauthn_credential(d: dict) -> dict:
     return out
 
 
+def _filter_to_model_fields(model_cls, d: dict) -> dict:
+    """Return a copy of d containing only keys accepted by model_cls constructor.
+    Attempt to use Pydantic __fields__ when available, otherwise inspect __init__ signature.
+    """
+    if not isinstance(d, dict):
+        return d
+    allowed = None
+    try:
+        if hasattr(model_cls, '__fields__'):
+            allowed = set(model_cls.__fields__.keys())
+        else:
+            sig = inspect.signature(model_cls.__init__)
+            allowed = set([p for p in sig.parameters.keys() if p != 'self' and p != 'kwargs' and p != 'cls'])
+    except Exception:
+        allowed = None
+    if allowed:
+        return {k: v for k, v in d.items() if k in allowed}
+    return d
+
+
 async def register_start(user_id: str, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
@@ -185,7 +206,17 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
             else:
                 transformed = _transform_keys(body)
                 transformed = _normalize_webauthn_credential(transformed)
-                credential = RegistrationCredential(**transformed)
+                # Remove browser-only fields the model doesn't expect
+                for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
+                    transformed.pop(k, None)
+                filtered = _filter_to_model_fields(RegistrationCredential, transformed)
+                # Final whitelist fallback to avoid unexpected browser-only keys
+                if not filtered or 'response' not in filtered:
+                    filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
+                    logger.info(f"RegistrationCredential fallback filtered keys: {list(filtered.keys())}")
+                else:
+                    logger.info(f"RegistrationCredential keys after filter: {list(filtered.keys())}")
+                credential = RegistrationCredential(**filtered)
         except Exception as e:
             logger.error(f"Failed to construct RegistrationCredential: {e}")
             raise
@@ -251,7 +282,16 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
             else:
                 transformed = _transform_keys(body)
                 transformed = _normalize_webauthn_credential(transformed)
-                cred = AuthenticationCredential(**transformed)
+                for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
+                    transformed.pop(k, None)
+                filtered = _filter_to_model_fields(AuthenticationCredential, transformed)
+                # Final whitelist fallback for auth credential
+                if not filtered or 'response' not in filtered:
+                    filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
+                    logger.info(f"AuthenticationCredential fallback filtered keys: {list(filtered.keys())}")
+                else:
+                    logger.info(f"AuthenticationCredential keys after filter: {list(filtered.keys())}")
+                cred = AuthenticationCredential(**filtered)
         except Exception as e:
             logger.error(f"Failed to construct AuthenticationCredential: {e}")
             raise
