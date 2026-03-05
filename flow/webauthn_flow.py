@@ -29,6 +29,9 @@ if os.path.exists(credentials_file):
     with open(credentials_file, 'r') as f:
         CREDENTIALS = json.load(f)
 
+# track ephemeral challenges (persisted to disk) - ensure global is declared before _load_challenges
+CHALLENGES: dict = {}
+
 # persist challenges so they survive reloads
 _CHALLENGES_FILE = Path(__file__).resolve().parents[1] / 'webauthn_challenges.json'
 
@@ -149,15 +152,49 @@ def _b64url_decode_bytes(s: str) -> bytes:
             return None
 
 
-def _find_user_by_challenge(client_challenge_bytes: bytes) -> tuple[str | None, str | None]:
-    """Return (user_id, challenge_str) matching the provided decoded challenge bytes, or (None, None)."""
-    if not client_challenge_bytes:
+def _normalize_b64url(data) -> str | None:
+    """Return a base64url (no padding) string for bytes or base64-like input.
+    Accepts bytes, bytearray, or str. Returns None on failure.
+    """
+    try:
+        if data is None:
+            return None
+        if isinstance(data, (bytes, bytearray)):
+            b = bytes(data)
+            s = base64.urlsafe_b64encode(b).decode('ascii')
+            return s.rstrip('=')
+        if isinstance(data, str):
+            # if it's already base64url-ish, normalize by decoding then re-encoding
+            # try to decode as urlsafe base64
+            try:
+                b = _b64url_decode_bytes(data)
+                if b is None:
+                    return None
+                s = base64.urlsafe_b64encode(b).decode('ascii')
+                return s.rstrip('=')
+            except Exception:
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def _find_user_by_challenge(client_challenge) -> tuple[str | None, str | None]:
+    """Return (user_id, stored_challenge_str) matching the provided challenge.
+    Accepts either bytes (raw challenge bytes) or a base64url string. Compares normalized base64url-no-pad strings.
+    """
+    if client_challenge is None:
         return (None, None)
-    for uid, chal in CHALLENGES.items():
+    try:
+        norm = _normalize_b64url(client_challenge)
+        if not norm:
+            return (None, None)
+    except Exception:
+        return (None, None)
+    for uid, stored in CHALLENGES.items():
         try:
-            chal_bytes = _b64url_decode_bytes(chal)
-            if chal_bytes == client_challenge_bytes:
-                return (uid, chal)
+            if stored == norm:
+                return (uid, stored)
         except Exception:
             continue
     return (None, None)
@@ -237,8 +274,16 @@ async def register_start(user_id: str, webauthn_config: dict | None = None):
                 user_verification=UserVerificationRequirement.REQUIRED
             )
         )
-        CHALLENGES[user_id] = options.challenge
+        # store normalized base64url (no padding) string for the challenge
+        ch_norm = _normalize_b64url(options.challenge)
+        CHALLENGES[user_id] = ch_norm if ch_norm else options.challenge
         _save_challenges()
+        # Debug: log a sanitized summary of stored challenges
+        try:
+            summary = {uid: (val[:8] + '...' if isinstance(val, str) and len(val) > 8 else val) for uid, val in CHALLENGES.items()}
+            logger.debug(f"Stored CHALLENGES summary: {summary}")
+        except Exception:
+            pass
         options_json = options_to_json(options)
         logger.info(f"Registration options for {user_id}: {options_json}")
         return json.loads(options_json)
@@ -291,8 +336,8 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
                     if isinstance(cdj, (bytes, bytearray)):
                         cdj_obj = json.loads(cdj.decode('utf-8'))
                         chal_field = cdj_obj.get('challenge')
-                        chal_bytes = _b64url_decode_bytes(chal_field)
-                        found_uid, found_chal = _find_user_by_challenge(chal_bytes)
+                        # chal_field may be base64url string; match by normalized base64url
+                        found_uid, found_chal = _find_user_by_challenge(chal_field)
                         if found_uid:
                             user_id = found_uid
                             logger.info(f"Derived user_id={user_id} from clientDataJSON challenge")
@@ -317,8 +362,7 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
                 if isinstance(cdj, (bytes, bytearray)):
                     cdj_obj = json.loads(cdj.decode('utf-8'))
                     chal_field = cdj_obj.get('challenge')
-                    chal_bytes = _b64url_decode_bytes(chal_field)
-                    found_uid, found_chal = _find_user_by_challenge(chal_bytes)
+                    found_uid, found_chal = _find_user_by_challenge(chal_field)
                     if found_uid:
                         challenge = found_chal
                         user_id = found_uid
@@ -327,15 +371,54 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
                 pass
 
         if not challenge:
+            # Debug: show stored challenges and incoming challenge for diagnosis
+            try:
+                incoming_chal = None
+                try:
+                    incoming_chal = getattr(credential.response, 'client_data_json', None)
+                    if isinstance(incoming_chal, (bytes, bytearray)):
+                        incoming_chal = json.loads(incoming_chal.decode('utf-8')).get('challenge')
+                except Exception:
+                    pass
+                logger.debug(f"Missing challenge. Stored CHALLENGES keys: {list(CHALLENGES.keys())}, incoming_challenge_sample={str(incoming_chal)[:32]}")
+            except Exception:
+                pass
             logger.warning(f"No challenge found for user {user_id}")
             return {"verified": False}
         try:
-            verification = verify_registration_response(
-                credential=credential,
-                expected_challenge=challenge,
-                expected_origin=ctx["origin"],
-                expected_rp_id=ctx["rp_id"]
-            )
+            # Ensure expected_challenge is bytes (we may have stored it as a base64url string)
+            if isinstance(challenge, (bytes, bytearray)):
+                expected_challenge = bytes(challenge)
+            else:
+                expected_challenge = _b64url_decode_bytes(challenge) if isinstance(challenge, str) else None
+            if expected_challenge is None:
+                logger.warning(f"Unable to decode expected challenge for user {user_id}")
+                return {"verified": False}
+            # --- DEBUG: sanitized summary of filtered & response ---
+            try:
+                resp = getattr(credential, 'response', None)
+                resp_summary = {}
+                for name in ('client_data_json', 'clientDataJSON', 'attestation_object', 'attestationObject', 'authenticator_data', 'authenticatorData', 'signature', 'user_handle', 'userHandle'):
+                    val = None
+                    if hasattr(resp, name):
+                        val = getattr(resp, name)
+                    if isinstance(val, (bytes, bytearray)):
+                        resp_summary[name] = f"bytes(len={len(val)})"
+                    elif isinstance(val, str):
+                        resp_summary[name] = f"str(len={len(val)})"
+                    elif isinstance(val, dict):
+                        resp_summary[name] = f"dict(keys={list(val.keys())})"
+                    else:
+                        resp_summary[name] = type(val).__name__
+                logger.debug(f"Registration pre-verify: filtered_keys={list(filtered.keys())}, response_summary={resp_summary}")
+            except Exception:
+                logger.debug("Registration pre-verify: failed to build response summary", exc_info=True)
+             verification = verify_registration_response(
+                 credential=credential,
+                 expected_challenge=expected_challenge,
+                 expected_origin=ctx["origin"],
+                 expected_rp_id=ctx["rp_id"]
+             )
             # store public key, sign count and credential id (raw_id hex) for later lookup
             raw_id_bytes = None
             try:
@@ -455,27 +538,54 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
                 pass
         cred_data = CREDENTIALS.get(user_id)
         if not challenge or not cred_data:
+            try:
+                cred_summary = {uid: (data.get('cred_id')[:8] + '...' if data.get('cred_id') and len(data.get('cred_id')) > 8 else data.get('cred_id')) for uid, data in CREDENTIALS.items()}
+                logger.debug(f"Stored credentials summary: {cred_summary}")
+            except Exception:
+                pass
             logger.warning(f"Missing challenge or credentials for user {user_id}")
             return {"verified": False}
         try:
-            verification = verify_authentication_response(
-                credential=cred,
-                expected_challenge=challenge,
-                expected_origin=ctx["origin"],
-                expected_rp_id=ctx["rp_id"],
-                credential_public_key=bytes.fromhex(cred_data['public_key']),
-                credential_current_sign_count=cred_data['sign_count']
-            )
-            # Debug: log the type of response we passed into the verifier
+            # Ensure expected_challenge is bytes
+            if isinstance(challenge, (bytes, bytearray)):
+                expected_challenge = bytes(challenge)
+            else:
+                expected_challenge = _b64url_decode_bytes(challenge) if isinstance(challenge, str) else None
+            if expected_challenge is None:
+                logger.warning(f"Unable to decode expected challenge for user {user_id} during auth")
+                return {"verified": False}
+            # --- DEBUG: sanitized summary of filtered & response for auth ---
             try:
-                resp_type = type(getattr(cred, 'response', None))
+                resp = getattr(cred, 'response', None)
+                resp_summary = {}
+                for name in ('client_data_json', 'clientDataJSON', 'authenticator_data', 'authenticatorData', 'signature', 'attestation_object', 'user_handle', 'userHandle'):
+                    val = None
+                    if hasattr(resp, name):
+                        val = getattr(resp, name)
+                    if isinstance(val, (bytes, bytearray)):
+                        resp_summary[name] = f"bytes(len={len(val)})"
+                    elif isinstance(val, str):
+                        resp_summary[name] = f"str(len={len(val)})"
+                    elif isinstance(val, dict):
+                        resp_summary[name] = f"dict(keys={list(val.keys())})"
+                    else:
+                        resp_summary[name] = type(val).__name__
+                logger.debug(f"Auth pre-verify: filtered_keys={list(filtered.keys())}, response_summary={resp_summary}")
             except Exception:
-                resp_type = None
-            logger.info(f"Passed cred.response of type {resp_type} to verify_authentication_response")
-
-            CREDENTIALS[user_id]['sign_count'] = verification.new_sign_count
+                logger.debug("Auth pre-verify: failed to build response summary", exc_info=True)
+             verification = verify_authentication_response(
+                 credential=cred,
+                 expected_challenge=expected_challenge,
+                 expected_origin=ctx["origin"],
+                 expected_rp_id=ctx["rp_id"],
+                 credential_public_key=bytes.fromhex(cred_data['public_key']),
+                 credential_current_sign_count=cred_data['sign_count']
+             )
+            # update stored sign count for the credential
+            cred_data['sign_count'] = verification.sign_count
             with open(credentials_file, 'w') as f:
                 json.dump(CREDENTIALS, f)
+            # remove challenge mapping
             try:
                 del CHALLENGES[user_id]
                 _save_challenges()
@@ -490,64 +600,3 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
         logger.error(f"Error in auth_finish: {e}", exc_info=True)
         return {"verified": False}
 
-
-def _ensure_response_bytes(resp_ns: SimpleNamespace) -> SimpleNamespace:
-    """Ensure common WebAuthn response fields are bytes on resp_ns.
-    Accepts attributes in snake_case or camelCase and converts dict->bytes (JSON), str->base64url decode.
-    """
-    if resp_ns is None:
-        return resp_ns
-    variants = [
-        ("client_data_json", "clientDataJSON"),
-        ("attestation_object", "attestationObject"),
-        ("authenticator_data", "authenticatorData"),
-        ("signature", "signature"),
-        ("user_handle", "userHandle"),
-    ]
-    for snake, camel in variants:
-        val = None
-        if hasattr(resp_ns, snake):
-            val = getattr(resp_ns, snake)
-            attr_name = snake
-        elif hasattr(resp_ns, camel):
-            val = getattr(resp_ns, camel)
-            attr_name = camel
-        else:
-            continue
-        # convert dict -> bytes(JSON)
-        if isinstance(val, dict):
-            try:
-                b = json.dumps(val, separators=(",", ":")).encode("utf-8")
-                setattr(resp_ns, attr_name, b)
-                # also set snake name for verifier
-                if attr_name != snake:
-                    setattr(resp_ns, snake, b)
-                continue
-            except Exception:
-                pass
-        # convert str -> base64url decode
-        if isinstance(val, str):
-            try:
-                s2 = val.replace("-", "+").replace("_", "/")
-                padding = "=" * (-len(s2) % 4)
-                b = base64.b64decode(s2 + padding)
-                setattr(resp_ns, attr_name, b)
-                if attr_name != snake:
-                    setattr(resp_ns, snake, b)
-                continue
-            except Exception:
-                try:
-                    b = base64.urlsafe_b64decode(val + ("=" * (-len(val) % 4)))
-                    setattr(resp_ns, attr_name, b)
-                    if attr_name != snake:
-                        setattr(resp_ns, snake, b)
-                    continue
-                except Exception:
-                    pass
-        # if bytes, ensure snake name exists
-        if isinstance(val, (bytes, bytearray)):
-            if attr_name != snake:
-                setattr(resp_ns, snake, bytes(val))
-            else:
-                setattr(resp_ns, snake, bytes(val))
-    return resp_ns
