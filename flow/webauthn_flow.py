@@ -14,6 +14,7 @@ from typing import Any
 import re
 import base64
 import inspect
+from types import SimpleNamespace
 
 
 dotenv.load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -199,24 +200,39 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
             logger.info(f"register_finish called for user_id={user_id}, body_keys={keys}")
         except Exception:
             logger.info("register_finish called, unable to enumerate body keys")
-        # Build model using parse_raw if available; otherwise convert camelCase keys
+        # Build model by normalizing the incoming body (always use local normalization)
         try:
-            if hasattr(RegistrationCredential, 'parse_raw'):
-                credential = RegistrationCredential.parse_raw(json.dumps(body))
+            transformed = _transform_keys(body)
+            transformed = _normalize_webauthn_credential(transformed)
+            # Remove browser-only fields the model doesn't expect
+            for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
+                transformed.pop(k, None)
+            filtered = _filter_to_model_fields(RegistrationCredential, transformed)
+            # Final whitelist fallback to avoid unexpected browser-only keys
+            if not filtered or 'response' not in filtered:
+                filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
+                logger.info(f"RegistrationCredential fallback filtered keys: {list(filtered.keys())}")
             else:
-                transformed = _transform_keys(body)
-                transformed = _normalize_webauthn_credential(transformed)
-                # Remove browser-only fields the model doesn't expect
-                for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
-                    transformed.pop(k, None)
-                filtered = _filter_to_model_fields(RegistrationCredential, transformed)
-                # Final whitelist fallback to avoid unexpected browser-only keys
-                if not filtered or 'response' not in filtered:
-                    filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
-                    logger.info(f"RegistrationCredential fallback filtered keys: {list(filtered.keys())}")
-                else:
-                    logger.info(f"RegistrationCredential keys after filter: {list(filtered.keys())}")
-                credential = RegistrationCredential(**filtered)
+                logger.info(f"RegistrationCredential keys after filter: {list(filtered.keys())}")
+            # Construct a lightweight credential object ensuring response has attributes
+            resp = filtered.get('response')
+            if isinstance(resp, dict):
+                resp_ns = SimpleNamespace(**resp)
+            elif isinstance(resp, SimpleNamespace):
+                resp_ns = resp
+            else:
+                resp_ns = SimpleNamespace()
+
+            # Normalize response fields to bytes for the verifier (handles camelCase & snake_case)
+            resp_ns = _ensure_response_bytes(resp_ns)
+
+            cred_kwargs = {
+                'id': filtered.get('id'),
+                'raw_id': filtered.get('raw_id'),
+                'type': filtered.get('type'),
+                'response': resp_ns,
+            }
+            credential = SimpleNamespace(**cred_kwargs)
         except Exception as e:
             logger.error(f"Failed to construct RegistrationCredential: {e}")
             raise
@@ -225,6 +241,13 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
             logger.warning(f"No challenge found for user {user_id}")
             return {"verified": False}
         try:
+            # Debug: log the type of response we're passing into the verifier
+            try:
+                resp_type = type(getattr(credential, 'response', None))
+            except Exception:
+                resp_type = None
+            logger.info(f"Passing credential.response of type {resp_type} to verify_registration_response")
+
             verification = verify_registration_response(
                 credential=credential,
                 expected_challenge=challenge,
@@ -275,23 +298,34 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
             logger.info(f"auth_finish called for user_id={user_id}, body_keys={keys}")
         except Exception:
             logger.info("auth_finish called, unable to enumerate body keys")
-        # Build model using parse_raw if available; otherwise convert camelCase keys
+        # Build model by normalizing the incoming body (always use local normalization)
         try:
-            if hasattr(AuthenticationCredential, 'parse_raw'):
-                cred = AuthenticationCredential.parse_raw(json.dumps(body))
+            # Always normalize incoming body into a SimpleNamespace credential
+            transformed = _transform_keys(body)
+            transformed = _normalize_webauthn_credential(transformed)
+            for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
+                transformed.pop(k, None)
+            filtered = _filter_to_model_fields(AuthenticationCredential, transformed)
+            if not filtered or 'response' not in filtered:
+                filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
+                logger.info(f"AuthenticationCredential fallback filtered keys: {list(filtered.keys())}")
             else:
-                transformed = _transform_keys(body)
-                transformed = _normalize_webauthn_credential(transformed)
-                for k in ['client_extension_results', 'authenticator_attachment', 'transports', 'authenticator_attachment']:
-                    transformed.pop(k, None)
-                filtered = _filter_to_model_fields(AuthenticationCredential, transformed)
-                # Final whitelist fallback for auth credential
-                if not filtered or 'response' not in filtered:
-                    filtered = {k: v for k, v in transformed.items() if k in {'id', 'raw_id', 'response', 'type'}}
-                    logger.info(f"AuthenticationCredential fallback filtered keys: {list(filtered.keys())}")
-                else:
-                    logger.info(f"AuthenticationCredential keys after filter: {list(filtered.keys())}")
-                cred = AuthenticationCredential(**filtered)
+                logger.info(f"AuthenticationCredential keys after filter: {list(filtered.keys())}")
+            resp = filtered.get('response')
+            if isinstance(resp, dict):
+                resp_ns = SimpleNamespace(**resp)
+            elif isinstance(resp, SimpleNamespace):
+                resp_ns = resp
+            else:
+                resp_ns = SimpleNamespace()
+            resp_ns = _ensure_response_bytes(resp_ns)
+            cred_kwargs = {
+                'id': filtered.get('id'),
+                'raw_id': filtered.get('raw_id'),
+                'type': filtered.get('type'),
+                'response': resp_ns,
+            }
+            cred = SimpleNamespace(**cred_kwargs)
         except Exception as e:
             logger.error(f"Failed to construct AuthenticationCredential: {e}")
             raise
@@ -309,6 +343,13 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
                 credential_public_key=bytes.fromhex(cred_data['public_key']),
                 credential_current_sign_count=cred_data['sign_count']
             )
+            # Debug: log the type of response we passed into the verifier
+            try:
+                resp_type = type(getattr(cred, 'response', None))
+            except Exception:
+                resp_type = None
+            logger.info(f"Passed cred.response of type {resp_type} to verify_authentication_response")
+
             CREDENTIALS[user_id]['sign_count'] = verification.new_sign_count
             with open(credentials_file, 'w') as f:
                 json.dump(CREDENTIALS, f)
@@ -321,3 +362,65 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
     except Exception as e:
         logger.error(f"Error in auth_finish: {e}", exc_info=True)
         return {"verified": False}
+
+
+def _ensure_response_bytes(resp_ns: SimpleNamespace) -> SimpleNamespace:
+    """Ensure common WebAuthn response fields are bytes on resp_ns.
+    Accepts attributes in snake_case or camelCase and converts dict->bytes (JSON), str->base64url decode.
+    """
+    if resp_ns is None:
+        return resp_ns
+    variants = [
+        ("client_data_json", "clientDataJSON"),
+        ("attestation_object", "attestationObject"),
+        ("authenticator_data", "authenticatorData"),
+        ("signature", "signature"),
+        ("user_handle", "userHandle"),
+    ]
+    for snake, camel in variants:
+        val = None
+        if hasattr(resp_ns, snake):
+            val = getattr(resp_ns, snake)
+            attr_name = snake
+        elif hasattr(resp_ns, camel):
+            val = getattr(resp_ns, camel)
+            attr_name = camel
+        else:
+            continue
+        # convert dict -> bytes(JSON)
+        if isinstance(val, dict):
+            try:
+                b = json.dumps(val, separators=(",", ":")).encode("utf-8")
+                setattr(resp_ns, attr_name, b)
+                # also set snake name for verifier
+                if attr_name != snake:
+                    setattr(resp_ns, snake, b)
+                continue
+            except Exception:
+                pass
+        # convert str -> base64url decode
+        if isinstance(val, str):
+            try:
+                s2 = val.replace("-", "+").replace("_", "/")
+                padding = "=" * (-len(s2) % 4)
+                b = base64.b64decode(s2 + padding)
+                setattr(resp_ns, attr_name, b)
+                if attr_name != snake:
+                    setattr(resp_ns, snake, b)
+                continue
+            except Exception:
+                try:
+                    b = base64.urlsafe_b64decode(val + ("=" * (-len(val) % 4)))
+                    setattr(resp_ns, attr_name, b)
+                    if attr_name != snake:
+                        setattr(resp_ns, snake, b)
+                    continue
+                except Exception:
+                    pass
+        # if bytes, ensure snake name exists
+        if isinstance(val, (bytes, bytearray)):
+            if attr_name != snake:
+                setattr(resp_ns, snake, bytes(val))
+            else:
+                setattr(resp_ns, snake, bytes(val))
+    return resp_ns
