@@ -5,6 +5,7 @@
 </head>
 <body>
 <h1>WebAuthn Demo (/webauth)</h1>
+<label for="username">Username</label>
 <input id="username" type="text" placeholder="Enter username" style="margin-bottom:10px;" />
 <button onclick="register()">Register</button>
 <button onclick="authenticate()">Authenticate</button>
@@ -13,7 +14,7 @@
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
-const BASE_URL = 'https://samf.py.harrylevesque.dev/webauthn';
+const BASE_URL = `${window.location.origin}/webauth`;
 
 function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
@@ -21,6 +22,14 @@ function status(msg, color='black') {
 
 function getUserId() {
   return document.getElementById('username').value.trim();
+}
+
+async function parseJsonOrThrow(resp, action) {
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${action} failed (${resp.status}): ${body || 'No response body'}`);
+  }
+  return resp.json();
 }
 
 async function register() {
@@ -31,8 +40,8 @@ async function register() {
   }
   try {
     status('Starting registration...');
-    const resp = await fetch(`${BASE_URL}/register/start?user_id=${USER_ID}`);
-    const opts = await resp.json();
+    const resp = await fetch(`${BASE_URL}/register/start?user_id=${encodeURIComponent(USER_ID)}`);
+    const opts = await parseJsonOrThrow(resp, 'Registration start');
     if (!opts || typeof opts !== 'object' || !opts.publicKey) {
       status('Registration failed: Invalid options from server', 'red');
       return;
@@ -46,7 +55,7 @@ async function register() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(attResp)
     });
-    const result = await verification.json();
+    const result = await parseJsonOrThrow(verification, 'Registration finish');
     status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
   } catch (e) {
     status('Error: ' + e.message, 'red');
@@ -61,8 +70,8 @@ async function authenticate() {
   }
   try {
     status('Starting authentication...');
-    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${USER_ID}`);
-    const opts = await resp.json();
+    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${encodeURIComponent(USER_ID)}`);
+    const opts = await parseJsonOrThrow(resp, 'Auth start');
     if (!opts || typeof opts !== 'object' || !opts.publicKey) {
       status('Auth failed: Invalid options from server', 'red');
       return;
@@ -76,7 +85,7 @@ async function authenticate() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(attResp)
     });
-    const result = await verification.json();
+    const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
   } catch (e) {
     status('Error: ' + e.message, 'red');
