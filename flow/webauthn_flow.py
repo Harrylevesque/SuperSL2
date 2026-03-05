@@ -91,7 +91,8 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
-        credential = RegistrationCredential(**body)
+        # Build model using parse_raw so incoming camelCase keys (e.g., rawId) are handled
+        credential = RegistrationCredential.parse_raw(json.dumps(body))
         challenge = CHALLENGES.get(user_id)
         if not challenge:
             logger.warning(f"No challenge found for user {user_id}")
@@ -142,7 +143,8 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
     try:
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
-        cred = AuthenticationCredential(**body)
+        # Build model using parse_raw so incoming camelCase keys are handled
+        cred = AuthenticationCredential.parse_raw(json.dumps(body))
         challenge = CHALLENGES.get(user_id)
         cred_data = CREDENTIALS.get(user_id)
         if not challenge or not cred_data:
