@@ -8,6 +8,7 @@ Storage layout (under BASE_SAVE_DIR/webauthn/):
 import json
 import os
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import HTTPException
 
@@ -36,6 +37,7 @@ from config import BASE_SAVE_DIR
 WEBAUTHN_DIR = BASE_SAVE_DIR / "webauthn"
 CRED_DIR = WEBAUTHN_DIR / "credentials"
 CHALLENGE_DIR = WEBAUTHN_DIR / "challenges"
+USER_DIR = BASE_SAVE_DIR / "user"
 
 
 def _ensure_dirs():
@@ -95,8 +97,57 @@ def resolve_webauthn_config(request) -> dict:
 # Registration
 # ---------------------------------------------------------------------------
 
-async def register_start(user_id: str, config: dict):
-    """Generate and return registration options for the given user."""
+def _normalize_sv_uuid(sv_uuid: str) -> str:
+    if sv_uuid.startswith("sv--"):
+        raw_uuid = sv_uuid[4:]
+    elif sv_uuid.startswith("sv-"):
+        raw_uuid = sv_uuid[3:]
+    else:
+        raise HTTPException(status_code=400, detail="sv_uuid must start with 'sv-' or 'sv--'")
+
+    try:
+        parsed = UUID(raw_uuid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="sv_uuid must include a valid UUID")
+
+    return f"sv--{str(parsed)}"
+
+
+def _normalize_svu_uuid(svu_uuid: str) -> str:
+    if not svu_uuid.startswith("svu--"):
+        raise HTTPException(status_code=400, detail="svu_uuid must start with 'svu--'")
+
+    try:
+        parsed = UUID(svu_uuid[5:])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="svu_uuid must include a valid UUID")
+
+    return f"svu--{str(parsed)}"
+
+
+def _normalize_identifiers(sv_uuid: str, svu_uuid: str) -> tuple[str, str]:
+    if not sv_uuid or not svu_uuid:
+        raise HTTPException(status_code=400, detail="sv_uuid and svu_uuid are required")
+    return _normalize_sv_uuid(sv_uuid), _normalize_svu_uuid(svu_uuid)
+
+
+def _combined_user_id(sv_uuid: str, svu_uuid: str) -> str:
+    return f"{sv_uuid}:{svu_uuid}"
+
+
+def _load_service_user_record(sv_uuid: str, svu_uuid: str) -> dict:
+    user_path = USER_DIR / sv_uuid / f"{svu_uuid}.json"
+    if not user_path.exists():
+        raise HTTPException(status_code=404, detail="Service user record not found for sv_uuid/svu_uuid")
+    return json.loads(user_path.read_text(encoding="utf-8"))
+
+
+async def register_start(sv_uuid: str, svu_uuid: str, config: dict):
+    """Generate and return registration options for the given service user."""
+    sv_uuid, svu_uuid = _normalize_identifiers(sv_uuid, svu_uuid)
+    user_id = _combined_user_id(sv_uuid, svu_uuid)
+    user_record = _load_service_user_record(sv_uuid, svu_uuid)
+
     existing = _load_credentials(user_id)
     exclude = [
         PublicKeyCredentialDescriptor(id=base64url_to_bytes(c["id"]))
@@ -107,7 +158,7 @@ async def register_start(user_id: str, config: dict):
         rp_id=config["rp_id"],
         rp_name=config["rp_name"],
         user_name=user_id,
-        user_display_name=user_id,
+        user_display_name=f"{sv_uuid}/{svu_uuid}",
         exclude_credentials=exclude,
         authenticator_selection=AuthenticatorSelectionCriteria(
             resident_key=ResidentKeyRequirement.PREFERRED,
@@ -120,15 +171,20 @@ async def register_start(user_id: str, config: dict):
 
     _save_challenge(user_id, opts.challenge)
 
-    # options_to_json returns a JSON string; parse it so FastAPI serialises it cleanly
-    return json.loads(options_to_json(opts))
+    payload = json.loads(options_to_json(opts))
+    payload["registration_context"] = {
+        "sv_uuid": sv_uuid,
+        "svu_uuid": svu_uuid,
+        "serviceuuid": user_record.get("serviceuuid"),
+        "createdAt": user_record.get("createdAt"),
+    }
+    return payload
 
 
 async def register_finish(body: dict, config: dict):
     """Verify the registration response and persist the credential."""
-    user_id = body.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required in the request body")
+    sv_uuid, svu_uuid = _normalize_identifiers(body.get("sv_uuid"), body.get("svu_uuid"))
+    user_id = _combined_user_id(sv_uuid, svu_uuid)
 
     expected_challenge = _load_and_delete_challenge(user_id)
 
@@ -156,18 +212,29 @@ async def register_finish(body: dict, config: dict):
     )
     _save_credentials(user_id, creds)
 
-    return {"verified": True}
+    user_record = _load_service_user_record(sv_uuid, svu_uuid)
+    return {
+        "verified": True,
+        "sv_uuid": sv_uuid,
+        "svu_uuid": svu_uuid,
+        "serviceuuid": user_record.get("serviceuuid"),
+        "createdAt": user_record.get("createdAt"),
+        "keychain": user_record.get("keychain", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
 
-async def auth_start(user_id: str, config: dict):
-    """Generate and return authentication options for the given user."""
+async def auth_start(sv_uuid: str, svu_uuid: str, config: dict):
+    """Generate and return authentication options for the given service user."""
+    sv_uuid, svu_uuid = _normalize_identifiers(sv_uuid, svu_uuid)
+    user_id = _combined_user_id(sv_uuid, svu_uuid)
+
     existing = _load_credentials(user_id)
     if not existing:
-        raise HTTPException(status_code=404, detail="No credentials registered for this user")
+        raise HTTPException(status_code=404, detail="No credentials registered for this sv_uuid/svu_uuid")
 
     allow = [
         PublicKeyCredentialDescriptor(id=base64url_to_bytes(c["id"]))
@@ -187,15 +254,14 @@ async def auth_start(user_id: str, config: dict):
 
 async def auth_finish(body: dict, config: dict):
     """Verify the authentication response."""
-    user_id = body.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required in the request body")
+    sv_uuid, svu_uuid = _normalize_identifiers(body.get("sv_uuid"), body.get("svu_uuid"))
+    user_id = _combined_user_id(sv_uuid, svu_uuid)
 
     expected_challenge = _load_and_delete_challenge(user_id)
 
     creds = _load_credentials(user_id)
     if not creds:
-        raise HTTPException(status_code=404, detail="No credentials registered for this user")
+        raise HTTPException(status_code=404, detail="No credentials registered for this sv_uuid/svu_uuid")
 
     import base64
 

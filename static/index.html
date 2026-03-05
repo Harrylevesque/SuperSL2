@@ -5,8 +5,10 @@
 </head>
 <body>
 <h1>WebAuthn Demo (/webauth)</h1>
-<label for="username">Username</label>
-<input id="username" type="text" placeholder="Enter username" style="margin-bottom:10px;" />
+<label for="sv_uuid">Service UUID (sv-... or sv--...)</label>
+<input id="sv_uuid" type="text" placeholder="sv--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
+<label for="svu_uuid">Service User UUID (svu--...)</label>
+<input id="svu_uuid" type="text" placeholder="svu--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
 <button onclick="register()">Register</button>
 <button onclick="authenticate()">Authenticate</button>
 <div id="status"></div>
@@ -20,8 +22,11 @@ function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
 }
 
-function getUserId() {
-  return document.getElementById('username').value.trim();
+function getIdentifiers() {
+  return {
+    sv_uuid: document.getElementById('sv_uuid').value.trim(),
+    svu_uuid: document.getElementById('svu_uuid').value.trim(),
+  };
 }
 
 async function parseJsonOrThrow(resp, action) {
@@ -41,18 +46,22 @@ function normalizeWebAuthnOptions(opts) {
 }
 
 async function register() {
-  const USER_ID = getUserId();
-  if (!USER_ID) {
-    status('Please enter a username.', 'red');
+  const { sv_uuid, svu_uuid } = getIdentifiers();
+  if (!sv_uuid || !svu_uuid) {
+    status('Please enter both sv_uuid and svu_uuid.', 'red');
     return;
   }
   try {
     status('Starting registration...');
-    const resp = await fetch(`${BASE_URL}/register/start?user_id=${encodeURIComponent(USER_ID)}`);
-    const opts = normalizeWebAuthnOptions(await parseJsonOrThrow(resp, 'Registration start'));
+    const resp = await fetch(`${BASE_URL}/register/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`);
+    const startPayload = await parseJsonOrThrow(resp, 'Registration start');
+    const opts = normalizeWebAuthnOptions(startPayload);
     if (!opts || !opts.challenge || !opts.user) {
       status('Registration failed: Invalid options from server', 'red');
       return;
+    }
+    if (startPayload.registration_context) {
+      status(`Registration context loaded for ${startPayload.registration_context.sv_uuid} / ${startPayload.registration_context.svu_uuid}`);
     }
     let attResp;
     try {
@@ -61,24 +70,27 @@ async function register() {
     const verification = await fetch(`${BASE_URL}/register/finish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ...attResp, user_id: USER_ID })
+      body: JSON.stringify({ ...attResp, sv_uuid, svu_uuid })
     });
     const result = await parseJsonOrThrow(verification, 'Registration finish');
     status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
+    if (result.verified) {
+      status(`Returned serviceuuid: ${result.serviceuuid || 'n/a'}`);
+    }
   } catch (e) {
     status('Error: ' + e.message, 'red');
   }
 }
 
 async function authenticate() {
-  const USER_ID = getUserId();
-  if (!USER_ID) {
-    status('Please enter a username.', 'red');
+  const { sv_uuid, svu_uuid } = getIdentifiers();
+  if (!sv_uuid || !svu_uuid) {
+    status('Please enter both sv_uuid and svu_uuid.', 'red');
     return;
   }
   try {
     status('Starting authentication...');
-    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${encodeURIComponent(USER_ID)}`);
+    const resp = await fetch(`${BASE_URL}/auth/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`);
     const opts = normalizeWebAuthnOptions(await parseJsonOrThrow(resp, 'Auth start'));
     if (!opts || !opts.challenge) {
       status('Auth failed: Invalid options from server', 'red');
@@ -91,7 +103,7 @@ async function authenticate() {
     const verification = await fetch(`${BASE_URL}/auth/finish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ...attResp, user_id: USER_ID })
+      body: JSON.stringify({ ...attResp, sv_uuid, svu_uuid })
     });
     const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');

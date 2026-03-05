@@ -403,8 +403,8 @@ async def index():
     return FileResponse(str(index_path), media_type="text/html")
 
 @app.get("/webauth/register/start")
-async def reg_start(request: Request, user_id: str = "user1"):
-    return await register_start(user_id, resolve_webauthn_config(request))
+async def reg_start(request: Request, sv_uuid: str, svu_uuid: str):
+    return await register_start(sv_uuid, svu_uuid, resolve_webauthn_config(request))
 
 @app.post("/webauth/register/finish")
 async def reg_finish(request: Request):
@@ -412,8 +412,8 @@ async def reg_finish(request: Request):
     return await register_finish(body, resolve_webauthn_config(request))
 
 @app.get("/webauth/auth/start")
-async def a_start(request: Request, user_id: str = "user1"):
-    return await auth_start(user_id, resolve_webauthn_config(request))
+async def a_start(request: Request, sv_uuid: str, svu_uuid: str):
+    return await auth_start(sv_uuid, svu_uuid, resolve_webauthn_config(request))
 
 @app.post("/webauth/auth/finish")
 async def a_finish(request: Request):
