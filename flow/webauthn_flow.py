@@ -8,38 +8,70 @@ import json
 import os
 import logging
 import dotenv
+from pathlib import Path
 from urllib.parse import urlparse
+from typing import Any
 
 
-dotenv.load_dotenv()
-host_env = os.environ.get("host")
-if not host_env:
-    raise RuntimeError("host not set in .env")
+dotenv.load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-
-parsed = urlparse(host_env)
-RP_ID = parsed.hostname  # e.g., 'localhost' [code:1]
-
-RP_NAME = 'multi factor authentication ststem in python to replace current systems'
-ORIGIN = host_env
+RP_NAME = os.getenv("WEBAUTHN_RP_NAME", "SuperSL2")
 
 logger = logging.getLogger(__name__)
 
 credentials_file = '../credentials.json'
+CREDENTIALS: dict = {}
 if os.path.exists(credentials_file):
     with open(credentials_file, 'r') as f:
-        CREDENTIALS: dict = json.load(f)
-else:
-    CREDENTIALS = {}
+        CREDENTIALS = json.load(f)
 
 CHALLENGES: dict = {}
 
-async def register_start(user_id: str):
+
+def _origin_from_request(request: Any | None) -> str | None:
+    if request is None:
+        return None
+
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    if forwarded_proto and forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    base_url = str(request.base_url).rstrip("/")
+    return base_url or None
+
+
+def resolve_webauthn_config(request: Any | None = None) -> dict:
+    env_origin = os.getenv("WEBAUTHN_ORIGIN") or os.getenv("host")
+    request_origin = _origin_from_request(request)
+    origin = (env_origin or request_origin or "").rstrip("/")
+
+    env_rp_id = os.getenv("WEBAUTHN_RP_ID")
+    rp_id = env_rp_id
+    if not rp_id and origin:
+        rp_id = urlparse(origin).hostname
+    if not rp_id and request_origin:
+        rp_id = urlparse(request_origin).hostname
+
+    if not origin or not rp_id:
+        raise RuntimeError(
+            "WebAuthn config missing. Set WEBAUTHN_ORIGIN/WEBAUTHN_RP_ID (or host in .env)."
+        )
+
+    return {
+        "rp_id": rp_id,
+        "origin": origin,
+        "rp_name": RP_NAME,
+    }
+
+
+async def register_start(user_id: str, webauthn_config: dict | None = None):
     try:
+        ctx = webauthn_config or resolve_webauthn_config()
         uid = user_id.encode()
         options = generate_registration_options(
-            rp_name=RP_NAME,
-            rp_id=RP_ID,
+            rp_name=ctx["rp_name"],
+            rp_id=ctx["rp_id"],
             user_id=uid,
             user_name='Demo User',
             authenticator_selection=AuthenticatorSelectionCriteria(
@@ -54,8 +86,10 @@ async def register_start(user_id: str):
         logger.error(f"Error in register_start: {e}", exc_info=True)
         raise
 
-async def register_finish(body: dict):
+
+async def register_finish(body: dict, webauthn_config: dict | None = None):
     try:
+        ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
         credential = RegistrationCredential(**body)
         challenge = CHALLENGES.get(user_id)
@@ -66,8 +100,8 @@ async def register_finish(body: dict):
             verification = verify_registration_response(
                 credential=credential,
                 expected_challenge=challenge,
-                expected_origin=ORIGIN,
-                expected_rp_id=RP_ID
+                expected_origin=ctx["origin"],
+                expected_rp_id=ctx["rp_id"]
             )
             CREDENTIALS[user_id] = {
                 'public_key': verification.credential_public_key.hex(),
@@ -85,11 +119,13 @@ async def register_finish(body: dict):
         logger.error(f"Error in register_finish: {e}", exc_info=True)
         return {"verified": False}
 
-async def auth_start(user_id: str):
+
+async def auth_start(user_id: str, webauthn_config: dict | None = None):
     try:
+        ctx = webauthn_config or resolve_webauthn_config()
         allow_credentials = [PublicKeyCredentialDescriptor(type=PublicKeyCredentialType.PUBLIC_KEY, id=user_id.encode())]
         options = generate_authentication_options(
-            rp_id=RP_ID,
+            rp_id=ctx["rp_id"],
             allow_credentials=allow_credentials,
             user_verification=UserVerificationRequirement.REQUIRED
         )
@@ -101,8 +137,10 @@ async def auth_start(user_id: str):
         logger.error(f"Error in auth_start: {e}", exc_info=True)
         raise
 
-async def auth_finish(body: dict):
+
+async def auth_finish(body: dict, webauthn_config: dict | None = None):
     try:
+        ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
         cred = AuthenticationCredential(**body)
         challenge = CHALLENGES.get(user_id)
@@ -114,8 +152,8 @@ async def auth_finish(body: dict):
             verification = verify_authentication_response(
                 credential=cred,
                 expected_challenge=challenge,
-                expected_origin=ORIGIN,
-                expected_rp_id=RP_ID,
+                expected_origin=ctx["origin"],
+                expected_rp_id=ctx["rp_id"],
                 credential_public_key=bytes.fromhex(cred_data['public_key']),
                 credential_current_sign_count=cred_data['sign_count']
             )

@@ -32,7 +32,7 @@ from flow.otp import (
     verify_client_signature as verify_otp_signature,
 )
 from flow.webauthn_flow import (
-    register_start, register_finish, auth_start, auth_finish
+    register_start, register_finish, auth_start, auth_finish, resolve_webauthn_config
 )
 
 # Load environment variables from .env file
@@ -392,13 +392,8 @@ async def otp_verify(con_uuid: str, payload: Step4_5Payload):
 
 
 
-
-
-
-
-'''# Mount static files
+# Mount static files
 @app.mount("/static", StaticFiles(directory="static"), name="static")
-'''
 @app.get("/", include_in_schema=False)
 async def index():
     index_path = Path("static") / "index.html"
@@ -407,28 +402,28 @@ async def index():
     return FileResponse(str(index_path), media_type="text/html")
 
 @app.get("/webauth/register/start")
-async def reg_start(user_id: str = "user1"):
-    return await register_start(user_id)
+async def reg_start(request: Request, user_id: str = "user1"):
+    return await register_start(user_id, resolve_webauthn_config(request))
 
 @app.post("/webauth/register/finish")
 async def reg_finish(request: Request):
-    return await register_finish(await request.json())
+    body = await request.json()
+    return await register_finish(body, resolve_webauthn_config(request))
 
 @app.get("/webauth/auth/start")
-async def a_start(user_id: str = "user1"):
-    return await auth_start(user_id)
+async def a_start(request: Request, user_id: str = "user1"):
+    return await auth_start(user_id, resolve_webauthn_config(request))
 
 @app.post("/webauth/auth/finish")
 async def a_finish(request: Request):
-    return await auth_finish(await request.json())
+    body = await request.json()
+    return await auth_finish(body, resolve_webauthn_config(request))
 
 # Ensure /config.json is always available at the root, regardless of subpath or mount
 @app.get("/config.json", include_in_schema=False)
-def get_config():
-    base_url = os.environ.get("host")
-    if not base_url:
-        raise HTTPException(status_code=500, detail="host not set in .env")
-    return JSONResponse({"BASE_URL": base_url})
+def get_config(request: Request):
+    ctx = resolve_webauthn_config(request)
+    return JSONResponse({"BASE_URL": ctx["origin"]})
 
 # serve favicon if present
 @app.get("/favicon.ico", include_in_schema=False)
@@ -438,9 +433,6 @@ async def favicon():
         return FileResponse(str(favicon_path), media_type="image/x-icon")
     raise HTTPException(status_code=404, detail="favicon not found")
 
-
-# Mount the static directory (add after app = FastAPI(...))
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Add an endpoint that serves `static/index.html` at /index.html
 @app.get("/index.html", include_in_schema=False)
