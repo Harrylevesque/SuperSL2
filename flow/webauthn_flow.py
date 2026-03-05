@@ -29,7 +29,31 @@ if os.path.exists(credentials_file):
     with open(credentials_file, 'r') as f:
         CREDENTIALS = json.load(f)
 
-CHALLENGES: dict = {}
+# persist challenges so they survive reloads
+_CHALLENGES_FILE = Path(__file__).resolve().parents[1] / 'webauthn_challenges.json'
+
+
+def _load_challenges() -> dict:
+    global CHALLENGES
+    try:
+        if _CHALLENGES_FILE.exists():
+            with open(_CHALLENGES_FILE, 'r') as f:
+                CHALLENGES = json.load(f)
+    except Exception:
+        CHALLENGES = {}
+    return CHALLENGES
+
+
+def _save_challenges() -> None:
+    try:
+        _CHALLENGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_CHALLENGES_FILE, 'w') as f:
+            json.dump(CHALLENGES, f)
+    except Exception:
+        pass
+
+# load persisted challenges at import time
+_load_challenges()
 
 
 def _origin_from_request(request: Any | None) -> str | None:
@@ -107,6 +131,38 @@ def _b64url_to_bytes(s: str) -> bytes:
         return base64.urlsafe_b64decode(s + padding)
 
 
+def _b64url_decode_bytes(s: str) -> bytes:
+    if s is None:
+        return None
+    if isinstance(s, (bytes, bytearray)):
+        return bytes(s)
+    if not isinstance(s, str):
+        return None
+    s2 = s.replace('-', '+').replace('_', '/')
+    padding = '=' * (-len(s2) % 4)
+    try:
+        return base64.urlsafe_b64decode(s2 + padding)
+    except Exception:
+        try:
+            return base64.b64decode(s2 + padding)
+        except Exception:
+            return None
+
+
+def _find_user_by_challenge(client_challenge_bytes: bytes) -> tuple[str | None, str | None]:
+    """Return (user_id, challenge_str) matching the provided decoded challenge bytes, or (None, None)."""
+    if not client_challenge_bytes:
+        return (None, None)
+    for uid, chal in CHALLENGES.items():
+        try:
+            chal_bytes = _b64url_decode_bytes(chal)
+            if chal_bytes == client_challenge_bytes:
+                return (uid, chal)
+        except Exception:
+            continue
+    return (None, None)
+
+
 def _normalize_webauthn_credential(d: dict) -> dict:
     # Decode common fields from base64url to bytes where appropriate
     if not isinstance(d, dict):
@@ -182,6 +238,7 @@ async def register_start(user_id: str, webauthn_config: dict | None = None):
             )
         )
         CHALLENGES[user_id] = options.challenge
+        _save_challenges()
         options_json = options_to_json(options)
         logger.info(f"Registration options for {user_id}: {options_json}")
         return json.loads(options_json)
@@ -192,6 +249,7 @@ async def register_start(user_id: str, webauthn_config: dict | None = None):
 
 async def register_finish(body: dict, webauthn_config: dict | None = None):
     try:
+        _load_challenges()
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
         # log keys shape for debugging (don't log full binary/blobs)
@@ -226,6 +284,21 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
             # Normalize response fields to bytes for the verifier (handles camelCase & snake_case)
             resp_ns = _ensure_response_bytes(resp_ns)
 
+            # If the caller didn't pass a user_id, try to derive it from the clientDataJSON challenge
+            if not user_id or user_id == 'user1':
+                try:
+                    cdj = getattr(resp_ns, 'client_data_json', None)
+                    if isinstance(cdj, (bytes, bytearray)):
+                        cdj_obj = json.loads(cdj.decode('utf-8'))
+                        chal_field = cdj_obj.get('challenge')
+                        chal_bytes = _b64url_decode_bytes(chal_field)
+                        found_uid, found_chal = _find_user_by_challenge(chal_bytes)
+                        if found_uid:
+                            user_id = found_uid
+                            logger.info(f"Derived user_id={user_id} from clientDataJSON challenge")
+                except Exception:
+                    pass
+
             cred_kwargs = {
                 'id': filtered.get('id'),
                 'raw_id': filtered.get('raw_id'),
@@ -237,30 +310,60 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
             logger.error(f"Failed to construct RegistrationCredential: {e}")
             raise
         challenge = CHALLENGES.get(user_id)
+        # If we still don't have a challenge, try to locate by parsing clientDataJSON challenge
+        if not challenge:
+            try:
+                cdj = getattr(credential.response, 'client_data_json', None)
+                if isinstance(cdj, (bytes, bytearray)):
+                    cdj_obj = json.loads(cdj.decode('utf-8'))
+                    chal_field = cdj_obj.get('challenge')
+                    chal_bytes = _b64url_decode_bytes(chal_field)
+                    found_uid, found_chal = _find_user_by_challenge(chal_bytes)
+                    if found_uid:
+                        challenge = found_chal
+                        user_id = found_uid
+                        logger.info(f"Located challenge for user_id={user_id} via clientDataJSON")
+            except Exception:
+                pass
+
         if not challenge:
             logger.warning(f"No challenge found for user {user_id}")
             return {"verified": False}
         try:
-            # Debug: log the type of response we're passing into the verifier
-            try:
-                resp_type = type(getattr(credential, 'response', None))
-            except Exception:
-                resp_type = None
-            logger.info(f"Passing credential.response of type {resp_type} to verify_registration_response")
-
             verification = verify_registration_response(
                 credential=credential,
                 expected_challenge=challenge,
                 expected_origin=ctx["origin"],
                 expected_rp_id=ctx["rp_id"]
             )
+            # store public key, sign count and credential id (raw_id hex) for later lookup
+            raw_id_bytes = None
+            try:
+                raw_id_bytes = getattr(credential, 'raw_id', None)
+                if isinstance(raw_id_bytes, (bytes, bytearray)):
+                    raw_hex = raw_id_bytes.hex()
+                elif isinstance(raw_id_bytes, str):
+                    # if it's a base64-like string, try to decode
+                    rbytes = _b64url_decode_bytes(raw_id_bytes)
+                    raw_hex = rbytes.hex() if rbytes else None
+                else:
+                    raw_hex = None
+            except Exception:
+                raw_hex = None
+
             CREDENTIALS[user_id] = {
                 'public_key': verification.credential_public_key.hex(),
-                'sign_count': verification.sign_count
+                'sign_count': verification.sign_count,
+                'cred_id': raw_hex,
             }
             with open(credentials_file, 'w') as f:
                 json.dump(CREDENTIALS, f)
-            del CHALLENGES[user_id]
+            # remove challenge mapping
+            try:
+                del CHALLENGES[user_id]
+                _save_challenges()
+            except Exception:
+                pass
             logger.info(f"Registration successful for {user_id}")
             return {"verified": True}
         except Exception as e:
@@ -281,6 +384,7 @@ async def auth_start(user_id: str, webauthn_config: dict | None = None):
             user_verification=UserVerificationRequirement.REQUIRED
         )
         CHALLENGES[user_id] = options.challenge
+        _save_challenges()
         options_json = options_to_json(options)
         logger.info(f"Authentication options for {user_id}: {options_json}")
         return json.loads(options_json)
@@ -291,6 +395,7 @@ async def auth_start(user_id: str, webauthn_config: dict | None = None):
 
 async def auth_finish(body: dict, webauthn_config: dict | None = None):
     try:
+        _load_challenges()
         ctx = webauthn_config or resolve_webauthn_config()
         user_id = body.get('user_id', 'user1')
         try:
@@ -330,6 +435,24 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
             logger.error(f"Failed to construct AuthenticationCredential: {e}")
             raise
         challenge = CHALLENGES.get(user_id)
+        # If no challenge found for provided user_id, try to derive user by matching incoming raw_id to stored cred_id
+        if not (challenge and user_id in CHALLENGES):
+            try:
+                incoming_raw = getattr(cred, 'raw_id', None)
+                incoming_bytes = None
+                if isinstance(incoming_raw, (bytes, bytearray)):
+                    incoming_bytes = bytes(incoming_raw)
+                elif isinstance(incoming_raw, str):
+                    incoming_bytes = _b64url_decode_bytes(incoming_raw)
+                if incoming_bytes:
+                    incoming_hex = incoming_bytes.hex()
+                    for uid, data in CREDENTIALS.items():
+                        if data.get('cred_id') == incoming_hex:
+                            user_id = uid
+                            logger.info(f"Resolved user_id={user_id} from credential raw_id")
+                            break
+            except Exception:
+                pass
         cred_data = CREDENTIALS.get(user_id)
         if not challenge or not cred_data:
             logger.warning(f"Missing challenge or credentials for user {user_id}")
@@ -353,7 +476,11 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
             CREDENTIALS[user_id]['sign_count'] = verification.new_sign_count
             with open(credentials_file, 'w') as f:
                 json.dump(CREDENTIALS, f)
-            del CHALLENGES[user_id]
+            try:
+                del CHALLENGES[user_id]
+                _save_challenges()
+            except Exception:
+                pass
             logger.info(f"Authentication successful for {user_id}")
             return {"verified": True}
         except Exception as e:
