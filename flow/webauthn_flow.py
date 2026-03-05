@@ -413,7 +413,7 @@ async def register_finish(body: dict, webauthn_config: dict | None = None):
                 logger.debug(f"Registration pre-verify: filtered_keys={list(filtered.keys())}, response_summary={resp_summary}")
             except Exception:
                 logger.debug("Registration pre-verify: failed to build response summary", exc_info=True)
-             verification = verify_registration_response(
+            verification = verify_registration_response(
                  credential=credential,
                  expected_challenge=expected_challenge,
                  expected_origin=ctx["origin"],
@@ -573,7 +573,7 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
                 logger.debug(f"Auth pre-verify: filtered_keys={list(filtered.keys())}, response_summary={resp_summary}")
             except Exception:
                 logger.debug("Auth pre-verify: failed to build response summary", exc_info=True)
-             verification = verify_authentication_response(
+            verification = verify_authentication_response(
                  credential=cred,
                  expected_challenge=expected_challenge,
                  expected_origin=ctx["origin"],
@@ -599,4 +599,66 @@ async def auth_finish(body: dict, webauthn_config: dict | None = None):
     except Exception as e:
         logger.error(f"Error in auth_finish: {e}", exc_info=True)
         return {"verified": False}
+
+
+def _ensure_response_bytes(resp_ns: SimpleNamespace) -> SimpleNamespace:
+    """Ensure common WebAuthn response fields are bytes on resp_ns.
+    Accepts attributes in snake_case or camelCase and converts dict->bytes (JSON), str->base64url decode.
+    """
+    if resp_ns is None:
+        return resp_ns
+    variants = [
+        ("client_data_json", "clientDataJSON"),
+        ("attestation_object", "attestationObject"),
+        ("authenticator_data", "authenticatorData"),
+        ("signature", "signature"),
+        ("user_handle", "userHandle"),
+    ]
+    for snake, camel in variants:
+        val = None
+        attr_name = None
+        if hasattr(resp_ns, snake):
+            val = getattr(resp_ns, snake)
+            attr_name = snake
+        elif hasattr(resp_ns, camel):
+            val = getattr(resp_ns, camel)
+            attr_name = camel
+        else:
+            continue
+        # convert dict -> bytes(JSON)
+        if isinstance(val, dict):
+            try:
+                b = json.dumps(val, separators=(",", ":")).encode("utf-8")
+                setattr(resp_ns, attr_name, b)
+                if attr_name != snake:
+                    setattr(resp_ns, snake, b)
+                continue
+            except Exception:
+                pass
+        # convert str -> base64url decode
+        if isinstance(val, str):
+            try:
+                s2 = val.replace("-", "+").replace("_", "/")
+                padding = "=" * (-len(s2) % 4)
+                b = base64.b64decode(s2 + padding)
+                setattr(resp_ns, attr_name, b)
+                if attr_name != snake:
+                    setattr(resp_ns, snake, b)
+                continue
+            except Exception:
+                try:
+                    b = base64.urlsafe_b64decode(val + ("=" * (-len(val) % 4)))
+                    setattr(resp_ns, attr_name, b)
+                    if attr_name != snake:
+                        setattr(resp_ns, snake, b)
+                    continue
+                except Exception:
+                    pass
+        # if bytes, ensure snake name exists
+        if isinstance(val, (bytes, bytearray)):
+            if attr_name != snake:
+                setattr(resp_ns, snake, bytes(val))
+            else:
+                setattr(resp_ns, snake, bytes(val))
+    return resp_ns
 
