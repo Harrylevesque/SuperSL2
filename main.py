@@ -51,6 +51,21 @@ app = FastAPI(
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Add a rotating file handler so logs persist across restarts and are easy to inspect
+try:
+    from logging.handlers import RotatingFileHandler
+    log_dir = BASE_SAVE_DIR / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logfile = log_dir / "webauthn.log"
+    file_handler = RotatingFileHandler(str(logfile), maxBytes=5 * 1024 * 1024, backupCount=3)
+    file_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    file_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(file_handler)
+    logger.debug("File logging enabled at %s", logfile)
+except Exception as exc:
+    logger.warning("Could not set up file logging: %s", exc)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -525,23 +540,23 @@ async def a_finish(request: Request):
         logger.exception("webauth.auth.finish: failed to parse JSON body: %s", exc)
         raise
     logger.info("webauth.auth.finish called; body keys=%s query_params=%s", list(body.keys()) if isinstance(body, dict) else type(body), dict(request.query_params))
-     # Let flow.webauthn_flow.auth_finish perform verification and any workingfile updates.
-     # First resolve identifiers so auth_finish receives normalized sv/svu when con-uuid mode is used.
-     mode = body.get("mode") or request.query_params.get("mode")
-     con_uuid = (
-         body.get("con_uuid")
-         or body.get("con-uuid")
-         or request.query_params.get("con_uuid")
-         or request.query_params.get("con-uuid")
-     )
-     resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
-         mode,
-         body.get("sv_uuid"),
-         body.get("svu_uuid"),
-         con_uuid,
-     )
-     body["sv_uuid"] = resolved_sv_uuid
-     body["svu_uuid"] = resolved_svu_uuid
+    # Let flow.webauthn_flow.auth_finish perform verification and any workingfile updates.
+    # First resolve identifiers so auth_finish receives normalized sv/svu when con-uuid mode is used.
+    mode = body.get("mode") or request.query_params.get("mode")
+    con_uuid = (
+        body.get("con_uuid")
+        or body.get("con-uuid")
+        or request.query_params.get("con_uuid")
+        or request.query_params.get("con-uuid")
+    )
+    resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
+        mode,
+        body.get("sv_uuid"),
+        body.get("svu_uuid"),
+        con_uuid,
+    )
+    body["sv_uuid"] = resolved_sv_uuid
+    body["svu_uuid"] = resolved_svu_uuid
     logger.debug("webauth.auth.finish resolved sv/svu: %s %s", resolved_sv_uuid, resolved_svu_uuid)
     result = await auth_finish(body, resolve_webauthn_config(request))
     logger.info("webauth.auth.finish result: %s", result)
@@ -604,3 +619,25 @@ async def get_session(con_uuid: str):
             raise HTTPException(status_code=500, detail=f"Failed to read session file: {exc}")
 
     raise HTTPException(status_code=404, detail="Working/session file not found")
+
+
+@app.get("/webauth/logs", include_in_schema=False)
+async def webauthn_logs(lines: int = 200):
+    """Return the last `lines` lines from the webauthn log file for debugging (dev-only).
+    Example: /webauth/logs?lines=100
+    """
+    try:
+        log_file = BASE_SAVE_DIR / "log" / "webauthn.log"
+        if not log_file.exists():
+            raise HTTPException(status_code=404, detail="Log file not found")
+        # read last N lines efficiently
+        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+            data = f.read()
+        all_lines = data.splitlines()
+        selected = all_lines[-lines:]
+        return JSONResponse({"lines": selected})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to read logs: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
