@@ -8,6 +8,7 @@ Storage layout (under BASE_SAVE_DIR/webauthn/):
 import json
 import os
 import time
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -40,6 +41,9 @@ WEBAUTHN_DIR = BASE_SAVE_DIR / "webauthn"
 CRED_DIR = WEBAUTHN_DIR / "credentials"
 CHALLENGE_DIR = WEBAUTHN_DIR / "challenges"
 USER_DIR = BASE_SAVE_DIR / "user"
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 def _ensure_dirs():
@@ -146,11 +150,14 @@ def _load_service_user_record(sv_uuid: str, svu_uuid: str) -> dict:
 
 async def register_start(sv_uuid: str, svu_uuid: str, config: dict):
     """Generate and return registration options for the given service user."""
+    logger.info("webauthn.register_start called: sv_uuid=%s svu_uuid=%s rp_id=%s", sv_uuid, svu_uuid, config.get("rp_id"))
     sv_uuid, svu_uuid = _normalize_identifiers(sv_uuid, svu_uuid)
     user_id = _combined_user_id(sv_uuid, svu_uuid)
+    logger.debug("Normalized identifiers: user_id=%s", user_id)
     user_record = _load_service_user_record(sv_uuid, svu_uuid)
 
     existing = _load_credentials(user_id)
+    logger.debug("Existing credentials count=%d for user_id=%s", len(existing), user_id)
     exclude = [
         PublicKeyCredentialDescriptor(id=base64url_to_bytes(c["id"]))
         for c in existing
@@ -172,6 +179,7 @@ async def register_start(sv_uuid: str, svu_uuid: str, config: dict):
     )
 
     _save_challenge(user_id, opts.challenge)
+    logger.info("Saved challenge for user_id=%s (len=%d)", user_id, len(opts.challenge) if hasattr(opts, 'challenge') else 0)
 
     payload = json.loads(options_to_json(opts))
     payload["registration_context"] = {
@@ -180,15 +188,19 @@ async def register_start(sv_uuid: str, svu_uuid: str, config: dict):
         "serviceuuid": user_record.get("serviceuuid"),
         "createdAt": user_record.get("createdAt"),
     }
+    logger.debug("register_start returning payload keys=%s", list(payload.keys()))
     return payload
 
 
 async def register_finish(body: dict, config: dict):
     """Verify the registration response and persist the credential."""
+    logger.info("webauthn.register_finish called; body keys=%s", list(body.keys()))
     sv_uuid, svu_uuid = _normalize_identifiers(body.get("sv_uuid"), body.get("svu_uuid"))
     user_id = _combined_user_id(sv_uuid, svu_uuid)
+    logger.debug("Normalized identifiers: user_id=%s", user_id)
 
     expected_challenge = _load_and_delete_challenge(user_id)
+    logger.debug("Loaded and deleted expected challenge for user_id=%s", user_id)
 
     try:
         verification = verify_registration_response(
@@ -199,6 +211,7 @@ async def register_finish(body: dict, config: dict):
             require_user_verification=False,
         )
     except Exception as exc:
+        logger.exception("Registration verification failed for user_id=%s: %s", user_id, exc)
         raise HTTPException(status_code=400, detail=f"Registration verification failed: {exc}")
 
     # Persist the new credential
@@ -213,6 +226,7 @@ async def register_finish(body: dict, config: dict):
         }
     )
     _save_credentials(user_id, creds)
+    logger.info("Saved credential for user_id=%s; total_creds=%d", user_id, len(creds))
 
     user_record = _load_service_user_record(sv_uuid, svu_uuid)
     return {
@@ -231,17 +245,21 @@ async def register_finish(body: dict, config: dict):
 
 async def auth_start(sv_uuid: str, svu_uuid: str, config: dict):
     """Generate and return authentication options for the given service user."""
+    logger.info("webauthn.auth_start called: sv_uuid=%s svu_uuid=%s rp_id=%s", sv_uuid, svu_uuid, config.get("rp_id"))
     sv_uuid, svu_uuid = _normalize_identifiers(sv_uuid, svu_uuid)
     user_id = _combined_user_id(sv_uuid, svu_uuid)
+    logger.debug("Normalized identifiers: user_id=%s", user_id)
 
     existing = _load_credentials(user_id)
     if not existing:
+        logger.warning("No credentials registered for user_id=%s", user_id)
         raise HTTPException(status_code=404, detail="No credentials registered for this sv_uuid/svu_uuid")
 
     allow = [
         PublicKeyCredentialDescriptor(id=base64url_to_bytes(c["id"]))
         for c in existing
     ]
+    logger.debug("Allow credential count=%d", len(allow))
 
     opts = generate_authentication_options(
         rp_id=config["rp_id"],
@@ -250,19 +268,24 @@ async def auth_start(sv_uuid: str, svu_uuid: str, config: dict):
     )
 
     _save_challenge(user_id, opts.challenge)
+    logger.info("Saved auth challenge for user_id=%s", user_id)
 
     return json.loads(options_to_json(opts))
 
 
 async def auth_finish(body: dict, config: dict):
     """Verify the authentication response."""
+    logger.info("webauthn.auth_finish called; incoming body keys=%s", list(body.keys()))
     sv_uuid, svu_uuid = _normalize_identifiers(body.get("sv_uuid"), body.get("svu_uuid"))
     user_id = _combined_user_id(sv_uuid, svu_uuid)
+    logger.debug("Normalized identifiers: user_id=%s", user_id)
 
     expected_challenge = _load_and_delete_challenge(user_id)
+    logger.debug("Loaded expected challenge for user_id=%s", user_id)
 
     creds = _load_credentials(user_id)
     if not creds:
+        logger.warning("No credentials found for user_id=%s", user_id)
         raise HTTPException(status_code=404, detail="No credentials registered for this sv_uuid/svu_uuid")
 
     import base64
@@ -283,6 +306,7 @@ async def auth_finish(body: dict, config: dict):
         raise HTTPException(status_code=400, detail="Credential not found")
 
     try:
+        logger.debug("Attempting to match credential id from body: id=%s rawId=%s", body.get("id"), body.get("rawId"))
         verification = verify_authentication_response(
             credential=body,
             expected_challenge=expected_challenge,
@@ -293,26 +317,33 @@ async def auth_finish(body: dict, config: dict):
             require_user_verification=False,
         )
     except Exception as exc:
+        logger.exception("Authentication verification failed for user_id=%s: %s", user_id, exc)
         raise HTTPException(status_code=400, detail=f"Authentication verification failed: {exc}")
 
     # Update sign count
     matched["sign_count"] = verification.new_sign_count
     _save_credentials(user_id, creds)
+    logger.info("Updated sign_count for user_id=%s credential_id=%s new_sign_count=%s", user_id, matched.get("id"), verification.new_sign_count)
 
-    response = {"verified": True}
+    response = {"verified": True, "sv_uuid": sv_uuid, "svu_uuid": svu_uuid}
 
     con_uuid = body.get("con_uuid") or body.get("con-uuid")
     if con_uuid:
         ts = time.time()
+        logger.info("webauthn.auth_finish: updating workingfile for con_uuid=%s user_id=%s", con_uuid, user_id)
         try:
             update_workingfile_status(con_uuid, "webauthn_complete", "webauthn", ts)
-            response.setdefault("steps", {})["webauthn"] = {
+            logger.info("webauthn.auth_finish: workingfile updated for con_uuid=%s", con_uuid)
+            steps = response.setdefault("steps", {})
+            steps["webauthn"] = {
                 "status": "complete",
                 "time_of_last_completion": ts,
             }
             response["con_uuid"] = con_uuid
         except Exception as exc:
-            response.setdefault("steps", {})["webauthn"] = {
+            logger.exception("webauthn.auth_finish: failed to update workingfile for con_uuid=%s: %s", con_uuid, exc)
+            steps = response.setdefault("steps", {})
+            steps["webauthn"] = {
                 "status": "error",
                 "detail": str(exc),
             }

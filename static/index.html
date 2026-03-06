@@ -440,6 +440,31 @@ async function authenticate() {
     });
     const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
+    // Show full server response so the client knows what changed (con_uuid, steps, timestamps)
+    try {
+      const pretty = JSON.stringify(result, null, 2);
+      status(`<pre style="text-align:left; white-space:pre-wrap;">${escapeHtml(pretty)}</pre>`, '#333');
+      console.log('Auth finish response:', result);
+    } catch (e) {
+      console.log('Failed to render response JSON', e, result);
+    }
+    // If server returned a con_uuid, fetch the working/session file to show updates.
+    try {
+      const con = result.con_uuid || result.con || (finishBody && finishBody.con_uuid);
+      if (con) {
+        const sessionResp = await fetch(`${window.location.origin}/session/${encodeURIComponent(con)}`);
+        if (sessionResp.ok) {
+          const sessionJson = await sessionResp.json();
+          status('<strong>Working/Session file:</strong>', '#666');
+          status(`<pre style="text-align:left; white-space:pre-wrap;">${escapeHtml(JSON.stringify(sessionJson, null, 2))}</pre>`, '#666');
+        } else {
+          const txt = await sessionResp.text();
+          status(`Could not load session file: ${sessionResp.status} ${txt}`, 'red');
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching session file:', e);
+    }
     if (result.verified) {
       const completionText = getCompletionTexts('Congratulations!', 'You are all set. Well done!');
       showCompletionState(completionText.title, completionText.subtitle);
@@ -456,6 +481,15 @@ initModeUi();
 // Auto-start auth when launched with mode=authentication and con-uuid query
 if (mode === 'authentication' && queryConUuid) {
   authenticate();
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 </script>
 </body>

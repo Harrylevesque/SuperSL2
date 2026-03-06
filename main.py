@@ -48,7 +48,7 @@ app = FastAPI(
 )
 
 # set up basic logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -495,6 +495,7 @@ async def a_start(
     con_uuid: Optional[str] = None,
     con_uuid_query: Optional[str] = Query(default=None, alias="con-uuid"),
 ):
+    logger.info("webauth.auth.start called: mode=%s sv_uuid=%s svu_uuid=%s con_uuid_query=%s", mode, sv_uuid, svu_uuid, con_uuid_query)
     con_uuid_param = con_uuid or con_uuid_query
     resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
         mode,
@@ -503,6 +504,7 @@ async def a_start(
         con_uuid_param,
     )
     options = await auth_start(resolved_sv_uuid, resolved_svu_uuid, resolve_webauthn_config(request))
+    logger.debug("webauth.auth.start resolved sv/svu: %s %s; options keys=%s", resolved_sv_uuid, resolved_svu_uuid, list(options.keys()) if isinstance(options, dict) else None)
 
     # Include resolved identifiers and steps metadata for clients that log progress
     payload = {
@@ -517,46 +519,33 @@ async def a_start(
 
 @app.post("/webauth/auth/finish")
 async def a_finish(request: Request):
-    body = await request.json()
-    mode = body.get("mode") or request.query_params.get("mode")
-    con_uuid = (
-        body.get("con_uuid")
-        or body.get("con-uuid")
-        or request.query_params.get("con_uuid")
-        or request.query_params.get("con-uuid")
-    )
-
-    resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
-        mode,
-        body.get("sv_uuid"),
-        body.get("svu_uuid"),
-        con_uuid,
-    )
-    body["sv_uuid"] = resolved_sv_uuid
-    body["svu_uuid"] = resolved_svu_uuid
-
+    try:
+        body = await request.json()
+    except Exception as exc:
+        logger.exception("webauth.auth.finish: failed to parse JSON body: %s", exc)
+        raise
+    logger.info("webauth.auth.finish called; body keys=%s query_params=%s", list(body.keys()) if isinstance(body, dict) else type(body), dict(request.query_params))
+     # Let flow.webauthn_flow.auth_finish perform verification and any workingfile updates.
+     # First resolve identifiers so auth_finish receives normalized sv/svu when con-uuid mode is used.
+     mode = body.get("mode") or request.query_params.get("mode")
+     con_uuid = (
+         body.get("con_uuid")
+         or body.get("con-uuid")
+         or request.query_params.get("con_uuid")
+         or request.query_params.get("con-uuid")
+     )
+     resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
+         mode,
+         body.get("sv_uuid"),
+         body.get("svu_uuid"),
+         con_uuid,
+     )
+     body["sv_uuid"] = resolved_sv_uuid
+     body["svu_uuid"] = resolved_svu_uuid
+    logger.debug("webauth.auth.finish resolved sv/svu: %s %s", resolved_sv_uuid, resolved_svu_uuid)
     result = await auth_finish(body, resolve_webauthn_config(request))
-
-    # Update working file for con-uuid based flows and echo metadata for clients
-    response_payload = {
-        **(result if isinstance(result, dict) else {}),
-        "sv_uuid": resolved_sv_uuid,
-        "svu_uuid": resolved_svu_uuid,
-    }
-    if con_uuid:
-        validated_con = _validate_con_uuid(con_uuid)
-        response_payload["con_uuid"] = validated_con
-        now_ts = time.time()
-        try:
-            update_workingfile_status(validated_con, "webauthn_complete", "webauthn", now_ts)
-            response_payload.setdefault("steps", {})["webauthn"] = {
-                "status": "complete",
-                "time_of_last_completion": now_ts,
-            }
-        except Exception as exc:
-            logger.warning("Failed to update workingfile for %s: %s", validated_con, exc)
-
-    return response_payload
+    logger.info("webauth.auth.finish result: %s", result)
+    return result
 
 # Ensure /config.json is always available at the root, regardless of subpath or mount
 @app.get("/config.json", include_in_schema=False)
@@ -589,3 +578,29 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal server error"}
     )
+
+
+@app.get("/session/{con_uuid}", tags=["debug"])
+async def get_session(con_uuid: str):
+    """Return the working/session file contents for debugging (checks workingfiles then session)."""
+    try:
+        normalized = _validate_con_uuid(con_uuid)
+    except HTTPException:
+        # accept raw input too
+        normalized = con_uuid
+
+    working_path = BASE_SAVE_DIR / "workingfiles" / f"{normalized}.json"
+    session_path = BASE_SAVE_DIR / "session" / f"{normalized}.json"
+
+    if working_path.exists():
+        try:
+            return json.loads(working_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read workingfile: {exc}")
+    if session_path.exists():
+        try:
+            return json.loads(session_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read session file: {exc}")
+
+    raise HTTPException(status_code=404, detail="Working/session file not found")
