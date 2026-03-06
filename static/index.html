@@ -41,6 +41,7 @@
 <button id="complete-signup-btn" class="hero-btn hidden" type="button">Complete Signup</button>
 
 <div id="status"></div>
+<div id="completion-embed"></div>
 
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
@@ -136,6 +137,7 @@ async function register() {
     status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
     if (result.verified) {
       status(`Returned serviceuuid: ${result.serviceuuid || 'n/a'}`);
+      showCompletionConfettiEmbed();
     }
   } catch (e) {
     status('Error: ' + e.message, 'red');
@@ -167,8 +169,73 @@ async function authenticate() {
     });
     const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
+    if (result.verified) {
+      showCompletionConfettiEmbed();
+    }
   } catch (e) {
     status('Error: ' + e.message, 'red');
+  }
+}
+
+function showCompletionConfettiEmbed() {
+  if (document.getElementById('codepen-confetti-embed')) {
+    return;
+  }
+
+  const mount = document.getElementById('completion-embed');
+  if (!mount) {
+    return;
+  }
+
+  const p = document.createElement('p');
+  p.id = 'codepen-confetti-embed';
+  p.className = 'codepen';
+  p.setAttribute('data-height', '300');
+  p.setAttribute('data-pen-title', 'Congrats confetti');
+  p.setAttribute('data-default-tab', 'html,result');
+  p.setAttribute('data-slug-hash', 'ZEBLepW');
+  p.setAttribute('data-user', 'l2zeo');
+  p.style.height = '300px';
+  p.style.boxSizing = 'border-box';
+  p.style.display = 'flex';
+  p.style.alignItems = 'center';
+  p.style.justifyContent = 'center';
+  p.style.border = '2px solid';
+  p.style.margin = '1em 0';
+  p.style.padding = '1em';
+
+  const span = document.createElement('span');
+  span.append('See the Pen ');
+
+  const penLink = document.createElement('a');
+  penLink.href = 'https://codepen.io/l2zeo/pen/ZEBLepW';
+  penLink.textContent = 'Congrats confetti';
+  span.appendChild(penLink);
+  span.append(' by junajuan (');
+
+  const userLink = document.createElement('a');
+  userLink.href = 'https://codepen.io/l2zeo';
+  userLink.textContent = '@l2zeo';
+  span.appendChild(userLink);
+  span.append(') on ');
+
+  const codepenLink = document.createElement('a');
+  codepenLink.href = 'https://codepen.io';
+  codepenLink.textContent = 'CodePen';
+  span.appendChild(codepenLink);
+  span.append('.');
+
+  p.appendChild(span);
+  mount.appendChild(p);
+
+  if (!document.getElementById('codepen-embed-script')) {
+    const script = document.createElement('script');
+    script.id = 'codepen-embed-script';
+    script.async = true;
+    script.src = 'https://public.codepenassets.com/embed/index.js';
+    mount.appendChild(script);
+  } else if (window.__CPEmbed) {
+    window.__CPEmbed();
   }
 }
 
