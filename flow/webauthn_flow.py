@@ -7,11 +7,13 @@ Storage layout (under BASE_SAVE_DIR/webauthn/):
 """
 import json
 import os
+import time
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import HTTPException
 
+from flow.workingfile import update_workingfile_status
 from webauthn import (
     generate_registration_options,
     verify_registration_response,
@@ -297,4 +299,22 @@ async def auth_finish(body: dict, config: dict):
     matched["sign_count"] = verification.new_sign_count
     _save_credentials(user_id, creds)
 
-    return {"verified": True}
+    response = {"verified": True}
+
+    con_uuid = body.get("con_uuid") or body.get("con-uuid")
+    if con_uuid:
+        ts = time.time()
+        try:
+            update_workingfile_status(con_uuid, "webauthn_complete", "webauthn", ts)
+            response.setdefault("steps", {})["webauthn"] = {
+                "status": "complete",
+                "time_of_last_completion": ts,
+            }
+            response["con_uuid"] = con_uuid
+        except Exception as exc:
+            response.setdefault("steps", {})["webauthn"] = {
+                "status": "error",
+                "detail": str(exc),
+            }
+
+    return response

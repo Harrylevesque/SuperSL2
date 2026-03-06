@@ -535,7 +535,28 @@ async def a_finish(request: Request):
     body["sv_uuid"] = resolved_sv_uuid
     body["svu_uuid"] = resolved_svu_uuid
 
-    return await auth_finish(body, resolve_webauthn_config(request))
+    result = await auth_finish(body, resolve_webauthn_config(request))
+
+    # Update working file for con-uuid based flows and echo metadata for clients
+    response_payload = {
+        **(result if isinstance(result, dict) else {}),
+        "sv_uuid": resolved_sv_uuid,
+        "svu_uuid": resolved_svu_uuid,
+    }
+    if con_uuid:
+        validated_con = _validate_con_uuid(con_uuid)
+        response_payload["con_uuid"] = validated_con
+        now_ts = time.time()
+        try:
+            update_workingfile_status(validated_con, "webauthn_complete", "webauthn", now_ts)
+            response_payload.setdefault("steps", {})["webauthn"] = {
+                "status": "complete",
+                "time_of_last_completion": now_ts,
+            }
+        except Exception as exc:
+            logger.warning("Failed to update workingfile for %s: %s", validated_con, exc)
+
+    return response_payload
 
 # Ensure /config.json is always available at the root, regardless of subpath or mount
 @app.get("/config.json", include_in_schema=False)
