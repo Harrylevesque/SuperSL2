@@ -2,40 +2,373 @@
 <html lang="en">
 <head>
 <title>WebAuthn Demo</title>
+<style>
+  body {
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0;
+    padding: 24px;
+  }
+
+  body.completion-active {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body.completion-active > *:not(#completion-root):not(script) {
+    display: none !important;
+  }
+
+  .hero-btn {
+    width: 100%;
+    max-width: 520px;
+    min-height: 88px;
+    border: 0;
+    border-radius: 16px;
+    font-size: 30px;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #5c6cff, #7b5cff);
+    box-shadow: 0 16px 36px rgba(92, 108, 255, 0.35);
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    margin: 16px 0;
+  }
+  .hero-btn:hover { transform: translateY(-1px); box-shadow: 0 20px 40px rgba(92, 108, 255, 0.45); }
+  .hero-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+  .hidden { display: none; }
+
+  @keyframes confetti-slow {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(25px, 105vh, 0) rotateX(360deg) rotateY(180deg); }
+  }
+
+  @keyframes confetti-medium {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(100px, 105vh, 0) rotateX(100deg) rotateY(360deg); }
+  }
+
+  @keyframes confetti-fast {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(-50px, 105vh, 0) rotateX(10deg) rotateY(250deg); }
+  }
+
+  .container {
+    width: 100vw;
+    height: 100vh;
+    background: #ffffff;
+    border: 1px solid white;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1000;
+    pointer-events: none;
+  }
+
+  .confetti-container {
+    perspective: 700px;
+    position: absolute;
+    overflow: hidden;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+  }
+
+  .confetti {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    border-radius: 0;
+  }
+
+  .confetti--animation-slow { animation: confetti-slow 2.25s linear 1 forwards; }
+  .confetti--animation-medium { animation: confetti-medium 1.75s linear 1 forwards; }
+  .confetti--animation-fast { animation: confetti-fast 1.25s linear 1 forwards; }
+
+  .completion-layer {
+    text-align: center;
+    margin-top: 0;
+    position: fixed;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    z-index: 1001;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #completion-root {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: #fff;
+  }
+
+  .checkmark-circle {
+    width: 150px;
+    height: 150px;
+    position: relative;
+    display: inline-block;
+    vertical-align: top;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .checkmark-circle .background {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    background: #00C09D;
+    position: absolute;
+  }
+
+  .checkmark-circle .checkmark { border-radius: 5px; }
+
+  .checkmark-circle .checkmark.draw:after {
+    animation-delay: 100ms;
+    animation-duration: 3s;
+    animation-timing-function: ease;
+    animation-name: checkmark;
+    transform: scaleX(-1) rotate(135deg);
+    animation-fill-mode: forwards;
+  }
+
+  .checkmark-circle .checkmark:after {
+    opacity: 1;
+    height: 75px;
+    width: 37.5px;
+    transform-origin: left top;
+    border-right: 15px solid white;
+    border-top: 15px solid white;
+    border-radius: 2.5px !important;
+    content: '';
+    left: 25px;
+    top: 75px;
+    position: absolute;
+  }
+
+  @keyframes checkmark {
+    0% { height: 0; width: 0; opacity: 1; }
+    20% { height: 0; width: 37.5px; opacity: 1; }
+    40% { height: 75px; width: 37.5px; opacity: 1; }
+    100% { height: 75px; width: 37.5px; opacity: 1; }
+  }
+</style>
 </head>
 <body>
 <h1>WebAuthn Demo (/webauth)</h1>
-<input id="username" type="text" placeholder="Enter username" style="margin-bottom:10px;" />
-<button onclick="register()">Register</button>
-<button onclick="authenticate()">Authenticate</button>
+
+<div id="manual-controls">
+  <label for="sv_uuid">Service UUID (sv-... or sv--...)</label>
+  <input id="sv_uuid" type="text" placeholder="sv--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
+  <label for="svu_uuid">Service User UUID (svu--...)</label>
+  <input id="svu_uuid" type="text" placeholder="svu--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
+  <button onclick="register()">Register</button>
+  <button onclick="authenticate()">Authenticate</button>
+</div>
+
+<input id="sv_uuid_hidden" type="hidden" />
+<input id="svu_uuid_hidden" type="hidden" />
+<button id="complete-signup-btn" class="hero-btn hidden" type="button">Complete Signup</button>
+<button id="authenticate-btn" class="hero-btn hidden" type="button">Authenticate</button>
+
 <div id="status"></div>
+
+<div id="completion-root" class="hidden">
+  <div class="js-container container" style="top:0 !important;"></div>
+  <div class="completion-layer">
+    <div class="checkmark-circle">
+      <div class="background"></div>
+      <div class="checkmark draw"></div>
+    </div>
+    <h1 id="completion-title">Congratulations!</h1>
+    <p id="completion-subtitle">You are all set. Well done!</p>
+  </div>
+</div>
 
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
-const BASE_URL = 'https://service.mfaip.harrylevesque.dev/webauthn';
+const BASE_URL = `${window.location.origin}/webauth`;
+const query = new URLSearchParams(window.location.search);
+const mode = (query.get('mode') || '').trim().toLowerCase();
+const querySvUuid = (query.get('sv-uuid') || query.get('sv_uuid') || '').trim();
+const querySvuUuid = (query.get('svu-uuid') || query.get('svu_uuid') || '').trim();
+const queryConUuid = (query.get('con-uuid') || query.get('con_uuid') || '').trim();
 
 function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
 }
 
-function getUserId() {
-  return document.getElementById('username').value.trim();
+const Confettiful = function(el) {
+  this.el = el;
+  this.containerEl = null;
+  this.confettiFrequency = 3;
+  this.confettiColors = ['#EF2964', '#00C09D', '#2D87B0', '#48485E', '#EFFF1D'];
+  this.confettiAnimations = ['slow', 'medium', 'fast'];
+  this.confettiInterval = null;
+
+  this._setupElements();
+  this._renderConfetti();
+};
+
+Confettiful.prototype._setupElements = function() {
+  const containerEl = document.createElement('div');
+  const elPosition = this.el.style.position;
+
+  if (elPosition !== 'relative' && elPosition !== 'absolute') {
+    this.el.style.position = 'relative';
+  }
+
+  containerEl.classList.add('confetti-container');
+  this.el.appendChild(containerEl);
+  this.containerEl = containerEl;
+};
+
+Confettiful.prototype._renderConfetti = function() {
+  this.confettiInterval = setInterval(() => {
+    const confettiEl = document.createElement('div');
+    const confettiSize = (Math.floor(Math.random() * 3) + 7) + 'px';
+    const confettiBackground = this.confettiColors[Math.floor(Math.random() * this.confettiColors.length)];
+    const confettiLeft = (Math.floor(Math.random() * this.el.offsetWidth)) + 'px';
+    const confettiAnimation = this.confettiAnimations[Math.floor(Math.random() * this.confettiAnimations.length)];
+
+    confettiEl.classList.add('confetti', 'confetti--animation-' + confettiAnimation);
+    confettiEl.style.left = confettiLeft;
+    confettiEl.style.width = confettiSize;
+    confettiEl.style.height = confettiSize;
+    confettiEl.style.backgroundColor = confettiBackground;
+
+    setTimeout(() => {
+      if (confettiEl.parentNode) {
+        confettiEl.parentNode.removeChild(confettiEl);
+      }
+    }, 3000);
+
+    this.containerEl.appendChild(confettiEl);
+  }, 25);
+};
+
+let confettifulInstance = null;
+
+function showCompletionState(titleText, subtitleText) {
+  const completionRoot = document.getElementById('completion-root');
+  const titleEl = document.getElementById('completion-title');
+  const subtitleEl = document.getElementById('completion-subtitle');
+
+  titleEl.textContent = titleText || 'Congratulations!';
+  subtitleEl.textContent = subtitleText || 'You are all set. Well done!';
+  document.body.classList.add('completion-active');
+  completionRoot.classList.remove('hidden');
+
+  if (!confettifulInstance) {
+    confettifulInstance = new Confettiful(document.querySelector('.js-container'));
+  }
+}
+
+function getCompletionTexts(defaultTitle, defaultSubtitle) {
+  const title = (query.get('title') || '').trim() || defaultTitle;
+  const subtitle = (query.get('subtitle') || '').trim() || defaultSubtitle;
+  return { title, subtitle };
+}
+
+function getIdentifiers() {
+  if (mode === 'register') {
+    const hiddenSv = document.getElementById('sv_uuid_hidden').value.trim();
+    const hiddenSvu = document.getElementById('svu_uuid_hidden').value.trim();
+    if (hiddenSv && hiddenSvu) {
+      return { sv_uuid: hiddenSv, svu_uuid: hiddenSvu };
+    }
+    return {
+      sv_uuid: document.getElementById('sv_uuid').value.trim(),
+      svu_uuid: document.getElementById('svu_uuid').value.trim(),
+    };
+  }
+
+  if (mode === 'authentication') {
+    return { con_uuid: queryConUuid };
+  }
+
+  return {
+    sv_uuid: document.getElementById('sv_uuid').value.trim(),
+    svu_uuid: document.getElementById('svu_uuid').value.trim(),
+  };
+}
+
+function initModeUi() {
+  if (mode === 'register') {
+    document.getElementById('manual-controls').classList.add('hidden');
+    document.getElementById('sv_uuid_hidden').value = querySvUuid;
+    document.getElementById('svu_uuid_hidden').value = querySvuUuid;
+
+    const cta = document.getElementById('complete-signup-btn');
+    cta.classList.remove('hidden');
+    cta.addEventListener('click', register);
+
+    if (!querySvUuid || !querySvuUuid) {
+      cta.disabled = true;
+      status('Missing query params. Expected mode=register&sv-uuid=...&svu-uuid=...', 'red');
+      return;
+    }
+
+    status('Ready to complete signup.', '#555');
+    return;
+  }
+
+  if (mode === 'authentication') {
+    document.getElementById('manual-controls').classList.add('hidden');
+    const authCta = document.getElementById('authenticate-btn');
+    authCta.classList.remove('hidden');
+    authCta.addEventListener('click', authenticate);
+
+    if (!queryConUuid) {
+      authCta.disabled = true;
+      status('Missing query params. Expected mode=authentication&con-uuid=...', 'red');
+      return;
+    }
+
+    status('Ready to authenticate with con-uuid.', '#555');
+    return;
+  }
+}
+
+async function parseJsonOrThrow(resp, action) {
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${action} failed (${resp.status}): ${body || 'No response body'}`);
+  }
+  return resp.json();
+}
+
+function normalizeWebAuthnOptions(opts) {
+  if (!opts || typeof opts !== 'object') {
+    return null;
+  }
+  // Support both { publicKey: ... } and direct options JSON from server.
+  return opts.publicKey && typeof opts.publicKey === 'object' ? opts.publicKey : opts;
 }
 
 async function register() {
-  const USER_ID = getUserId();
-  if (!USER_ID) {
-    status('Please enter a username.', 'red');
+  const { sv_uuid, svu_uuid } = getIdentifiers();
+  if (!sv_uuid || !svu_uuid) {
+    status('Please enter both sv_uuid and svu_uuid.', 'red');
     return;
   }
   try {
     status('Starting registration...');
-    const resp = await fetch(`${BASE_URL}/register/start?user_id=${USER_ID}`);
-    const opts = await resp.json();
-    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+    const resp = await fetch(`${BASE_URL}/register/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`);
+    const startPayload = await parseJsonOrThrow(resp, 'Registration start');
+    const opts = normalizeWebAuthnOptions(startPayload);
+    if (!opts || !opts.challenge || !opts.user) {
       status('Registration failed: Invalid options from server', 'red');
       return;
+    }
+    if (startPayload.registration_context) {
+      status(`Registration context loaded for ${startPayload.registration_context.sv_uuid} / ${startPayload.registration_context.svu_uuid}`);
     }
     let attResp;
     try {
@@ -44,40 +377,98 @@ async function register() {
     const verification = await fetch(`${BASE_URL}/register/finish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(attResp)
+      body: JSON.stringify({ ...attResp, sv_uuid, svu_uuid })
     });
-    const result = await verification.json();
+    const result = await parseJsonOrThrow(verification, 'Registration finish');
     status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
+    if (result.verified) {
+      status(`Returned serviceuuid: ${result.serviceuuid || 'n/a'}`);
+      const completionText = getCompletionTexts('Congratulations!', 'You are all set. Well done!');
+      showCompletionState(completionText.title, completionText.subtitle);
+    }
   } catch (e) {
     status('Error: ' + e.message, 'red');
   }
 }
 
 async function authenticate() {
-  const USER_ID = getUserId();
-  if (!USER_ID) {
-    status('Please enter a username.', 'red');
-    return;
+  const ids = getIdentifiers();
+  const { sv_uuid, svu_uuid, con_uuid } = ids;
+
+  if (mode === 'authentication') {
+    if (!con_uuid) {
+      status('Please provide con-uuid in query string.', 'red');
+      return;
+    }
+  } else {
+    if (!sv_uuid || !svu_uuid) {
+      status('Please enter both sv_uuid and svu_uuid.', 'red');
+      return;
+    }
   }
+
   try {
     status('Starting authentication...');
-    const resp = await fetch(`${BASE_URL}/auth/start?user_id=${USER_ID}`);
-    const opts = await resp.json();
-    if (!opts || typeof opts !== 'object' || !opts.publicKey) {
+    const authStartUrl = mode === 'authentication'
+      ? `${BASE_URL}/auth/start?mode=authentication&con-uuid=${encodeURIComponent(con_uuid)}`
+      : `${BASE_URL}/auth/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`;
+
+    const startPayload = await parseJsonOrThrow(await fetch(authStartUrl), 'Auth start');
+    const opts = normalizeWebAuthnOptions(startPayload);
+    if (!opts || !opts.challenge) {
       status('Auth failed: Invalid options from server', 'red');
       return;
     }
+    if (startPayload.steps && startPayload.steps.webauthn) {
+      status('Loaded auth context from steps.webauthn.', '#555');
+    }
+
     let attResp;
     try {
       attResp = await startAuthentication(opts);
     } catch (e) { status('Auth failed: ' + e, 'red'); return; }
+
+    const finishBody = {
+      ...attResp,
+      ...(mode === 'authentication' ? { mode: 'authentication', con_uuid } : { sv_uuid, svu_uuid }),
+    };
+
     const verification = await fetch(`${BASE_URL}/auth/finish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(attResp)
+      body: JSON.stringify(finishBody)
     });
-    const result = await verification.json();
+    const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
+    // Show full server response so the client knows what changed (con_uuid, steps, timestamps)
+    try {
+      const pretty = JSON.stringify(result, null, 2);
+      status(`<pre style="text-align:left; white-space:pre-wrap;">${escapeHtml(pretty)}</pre>`, '#333');
+      console.log('Auth finish response:', result);
+    } catch (e) {
+      console.log('Failed to render response JSON', e, result);
+    }
+    // If server returned a con_uuid, fetch the working/session file to show updates.
+    try {
+      const con = result.con_uuid || result.con || (finishBody && finishBody.con_uuid);
+      if (con) {
+        const sessionResp = await fetch(`${window.location.origin}/session/${encodeURIComponent(con)}`);
+        if (sessionResp.ok) {
+          const sessionJson = await sessionResp.json();
+          status('<strong>Working/Session file:</strong>', '#666');
+          status(`<pre style="text-align:left; white-space:pre-wrap;">${escapeHtml(JSON.stringify(sessionJson, null, 2))}</pre>`, '#666');
+        } else {
+          const txt = await sessionResp.text();
+          status(`Could not load session file: ${sessionResp.status} ${txt}`, 'red');
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching session file:', e);
+    }
+    if (result.verified) {
+      const completionText = getCompletionTexts('Congratulations!', 'You are all set. Well done!');
+      showCompletionState(completionText.title, completionText.subtitle);
+    }
   } catch (e) {
     status('Error: ' + e.message, 'red');
   }
@@ -85,6 +476,21 @@ async function authenticate() {
 
 window.register = register;
 window.authenticate = authenticate;
+initModeUi();
+
+// Auto-start auth when launched with mode=authentication and con-uuid query
+if (mode === 'authentication' && queryConUuid) {
+  authenticate();
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 </script>
 </body>
 </html>
