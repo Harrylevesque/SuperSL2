@@ -3,7 +3,12 @@
 <head>
 <title>WebAuthn Demo</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 24px; }
+  body {
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0;
+    padding: 24px;
+  }
+
   .hero-btn {
     width: 100%;
     max-width: 520px;
@@ -22,6 +27,116 @@
   .hero-btn:hover { transform: translateY(-1px); box-shadow: 0 20px 40px rgba(92, 108, 255, 0.45); }
   .hero-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
   .hidden { display: none; }
+
+  @keyframes confetti-slow {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(25px, 105vh, 0) rotateX(360deg) rotateY(180deg); }
+  }
+
+  @keyframes confetti-medium {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(100px, 105vh, 0) rotateX(100deg) rotateY(360deg); }
+  }
+
+  @keyframes confetti-fast {
+    0% { transform: translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+    100% { transform: translate3d(-50px, 105vh, 0) rotateX(10deg) rotateY(250deg); }
+  }
+
+  .container {
+    width: 100vw;
+    height: 100vh;
+    background: #ffffff;
+    border: 1px solid white;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1000;
+    pointer-events: none;
+  }
+
+  .confetti-container {
+    perspective: 700px;
+    position: absolute;
+    overflow: hidden;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+  }
+
+  .confetti {
+    position: absolute;
+    z-index: 1;
+    top: -10px;
+    border-radius: 0;
+  }
+
+  .confetti--animation-slow { animation: confetti-slow 2.25s linear 1 forwards; }
+  .confetti--animation-medium { animation: confetti-medium 1.75s linear 1 forwards; }
+  .confetti--animation-fast { animation: confetti-fast 1.25s linear 1 forwards; }
+
+  .completion-layer {
+    text-align: center;
+    margin-top: 30px;
+    position: fixed;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    z-index: 1001;
+    pointer-events: none;
+  }
+
+  .checkmark-circle {
+    width: 150px;
+    height: 150px;
+    position: relative;
+    display: inline-block;
+    vertical-align: top;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .checkmark-circle .background {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    background: #00C09D;
+    position: absolute;
+  }
+
+  .checkmark-circle .checkmark { border-radius: 5px; }
+
+  .checkmark-circle .checkmark.draw:after {
+    animation-delay: 100ms;
+    animation-duration: 3s;
+    animation-timing-function: ease;
+    animation-name: checkmark;
+    transform: scaleX(-1) rotate(135deg);
+    animation-fill-mode: forwards;
+  }
+
+  .checkmark-circle .checkmark:after {
+    opacity: 1;
+    height: 75px;
+    width: 37.5px;
+    transform-origin: left top;
+    border-right: 15px solid white;
+    border-top: 15px solid white;
+    border-radius: 2.5px !important;
+    content: '';
+    left: 25px;
+    top: 75px;
+    position: absolute;
+  }
+
+  @keyframes checkmark {
+    0% { height: 0; width: 0; opacity: 1; }
+    20% { height: 0; width: 37.5px; opacity: 1; }
+    40% { height: 75px; width: 37.5px; opacity: 1; }
+    100% { height: 75px; width: 37.5px; opacity: 1; }
+  }
 </style>
 </head>
 <body>
@@ -41,7 +156,18 @@
 <button id="complete-signup-btn" class="hero-btn hidden" type="button">Complete Signup</button>
 
 <div id="status"></div>
-<div id="completion-embed"></div>
+
+<div id="completion-root" class="hidden">
+  <div class="js-container container" style="top:0 !important;"></div>
+  <div class="completion-layer">
+    <div class="checkmark-circle">
+      <div class="background"></div>
+      <div class="checkmark draw"></div>
+    </div>
+    <h1 id="completion-title">Congratulations!</h1>
+    <p id="completion-subtitle">You are all set. Well done!</p>
+  </div>
+</div>
 
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
@@ -54,6 +180,77 @@ const querySvuUuid = (query.get('svu-uuid') || query.get('svu_uuid') || '').trim
 
 function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
+}
+
+const Confettiful = function(el) {
+  this.el = el;
+  this.containerEl = null;
+  this.confettiFrequency = 3;
+  this.confettiColors = ['#EF2964', '#00C09D', '#2D87B0', '#48485E', '#EFFF1D'];
+  this.confettiAnimations = ['slow', 'medium', 'fast'];
+  this.confettiInterval = null;
+
+  this._setupElements();
+  this._renderConfetti();
+};
+
+Confettiful.prototype._setupElements = function() {
+  const containerEl = document.createElement('div');
+  const elPosition = this.el.style.position;
+
+  if (elPosition !== 'relative' && elPosition !== 'absolute') {
+    this.el.style.position = 'relative';
+  }
+
+  containerEl.classList.add('confetti-container');
+  this.el.appendChild(containerEl);
+  this.containerEl = containerEl;
+};
+
+Confettiful.prototype._renderConfetti = function() {
+  this.confettiInterval = setInterval(() => {
+    const confettiEl = document.createElement('div');
+    const confettiSize = (Math.floor(Math.random() * 3) + 7) + 'px';
+    const confettiBackground = this.confettiColors[Math.floor(Math.random() * this.confettiColors.length)];
+    const confettiLeft = (Math.floor(Math.random() * this.el.offsetWidth)) + 'px';
+    const confettiAnimation = this.confettiAnimations[Math.floor(Math.random() * this.confettiAnimations.length)];
+
+    confettiEl.classList.add('confetti', 'confetti--animation-' + confettiAnimation);
+    confettiEl.style.left = confettiLeft;
+    confettiEl.style.width = confettiSize;
+    confettiEl.style.height = confettiSize;
+    confettiEl.style.backgroundColor = confettiBackground;
+
+    setTimeout(() => {
+      if (confettiEl.parentNode) {
+        confettiEl.parentNode.removeChild(confettiEl);
+      }
+    }, 3000);
+
+    this.containerEl.appendChild(confettiEl);
+  }, 25);
+};
+
+let confettifulInstance = null;
+
+function showCompletionState(titleText, subtitleText) {
+  const completionRoot = document.getElementById('completion-root');
+  const titleEl = document.getElementById('completion-title');
+  const subtitleEl = document.getElementById('completion-subtitle');
+
+  titleEl.textContent = titleText || 'Congratulations!';
+  subtitleEl.textContent = subtitleText || 'You are all set. Well done!';
+  completionRoot.classList.remove('hidden');
+
+  if (!confettifulInstance) {
+    confettifulInstance = new Confettiful(document.querySelector('.js-container'));
+  }
+}
+
+function getCompletionTexts(defaultTitle, defaultSubtitle) {
+  const title = (query.get('title') || '').trim() || defaultTitle;
+  const subtitle = (query.get('subtitle') || '').trim() || defaultSubtitle;
+  return { title, subtitle };
 }
 
 function getIdentifiers() {
@@ -137,7 +334,8 @@ async function register() {
     status(result.verified ? 'Registration success!' : 'Registration failed', result.verified ? 'green' : 'red');
     if (result.verified) {
       status(`Returned serviceuuid: ${result.serviceuuid || 'n/a'}`);
-      showCompletionConfettiEmbed();
+      const completionText = getCompletionTexts('Congratulations!', 'You are all set. Well done!');
+      showCompletionState(completionText.title, completionText.subtitle);
     }
   } catch (e) {
     status('Error: ' + e.message, 'red');
@@ -170,72 +368,11 @@ async function authenticate() {
     const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
     if (result.verified) {
-      showCompletionConfettiEmbed();
+      const completionText = getCompletionTexts('Congratulations!', 'You are all set. Well done!');
+      showCompletionState(completionText.title, completionText.subtitle);
     }
   } catch (e) {
     status('Error: ' + e.message, 'red');
-  }
-}
-
-function showCompletionConfettiEmbed() {
-  if (document.getElementById('codepen-confetti-embed')) {
-    return;
-  }
-
-  const mount = document.getElementById('completion-embed');
-  if (!mount) {
-    return;
-  }
-
-  const p = document.createElement('p');
-  p.id = 'codepen-confetti-embed';
-  p.className = 'codepen';
-  p.setAttribute('data-height', '300');
-  p.setAttribute('data-pen-title', 'Congrats confetti');
-  p.setAttribute('data-default-tab', 'html,result');
-  p.setAttribute('data-slug-hash', 'ZEBLepW');
-  p.setAttribute('data-user', 'l2zeo');
-  p.style.height = '300px';
-  p.style.boxSizing = 'border-box';
-  p.style.display = 'flex';
-  p.style.alignItems = 'center';
-  p.style.justifyContent = 'center';
-  p.style.border = '2px solid';
-  p.style.margin = '1em 0';
-  p.style.padding = '1em';
-
-  const span = document.createElement('span');
-  span.append('See the Pen ');
-
-  const penLink = document.createElement('a');
-  penLink.href = 'https://codepen.io/l2zeo/pen/ZEBLepW';
-  penLink.textContent = 'Congrats confetti';
-  span.appendChild(penLink);
-  span.append(' by junajuan (');
-
-  const userLink = document.createElement('a');
-  userLink.href = 'https://codepen.io/l2zeo';
-  userLink.textContent = '@l2zeo';
-  span.appendChild(userLink);
-  span.append(') on ');
-
-  const codepenLink = document.createElement('a');
-  codepenLink.href = 'https://codepen.io';
-  codepenLink.textContent = 'CodePen';
-  span.appendChild(codepenLink);
-  span.append('.');
-
-  p.appendChild(span);
-  mount.appendChild(p);
-
-  if (!document.getElementById('codepen-embed-script')) {
-    const script = document.createElement('script');
-    script.id = 'codepen-embed-script';
-    script.async = true;
-    script.src = 'https://public.codepenassets.com/embed/index.js';
-    mount.appendChild(script);
-  } else if (window.__CPEmbed) {
-    window.__CPEmbed();
   }
 }
 
