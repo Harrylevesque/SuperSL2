@@ -174,6 +174,7 @@
 <input id="sv_uuid_hidden" type="hidden" />
 <input id="svu_uuid_hidden" type="hidden" />
 <button id="complete-signup-btn" class="hero-btn hidden" type="button">Complete Signup</button>
+<button id="authenticate-btn" class="hero-btn hidden" type="button">Authenticate</button>
 
 <div id="status"></div>
 
@@ -197,6 +198,7 @@ const query = new URLSearchParams(window.location.search);
 const mode = (query.get('mode') || '').trim().toLowerCase();
 const querySvUuid = (query.get('sv-uuid') || query.get('sv_uuid') || '').trim();
 const querySvuUuid = (query.get('svu-uuid') || query.get('svu_uuid') || '').trim();
+const queryConUuid = (query.get('con-uuid') || query.get('con_uuid') || '').trim();
 
 function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
@@ -275,11 +277,22 @@ function getCompletionTexts(defaultTitle, defaultSubtitle) {
 }
 
 function getIdentifiers() {
-  const hiddenSv = document.getElementById('sv_uuid_hidden').value.trim();
-  const hiddenSvu = document.getElementById('svu_uuid_hidden').value.trim();
-  if (mode === 'register' && hiddenSv && hiddenSvu) {
-    return { sv_uuid: hiddenSv, svu_uuid: hiddenSvu };
+  if (mode === 'register') {
+    const hiddenSv = document.getElementById('sv_uuid_hidden').value.trim();
+    const hiddenSvu = document.getElementById('svu_uuid_hidden').value.trim();
+    if (hiddenSv && hiddenSvu) {
+      return { sv_uuid: hiddenSv, svu_uuid: hiddenSvu };
+    }
+    return {
+      sv_uuid: document.getElementById('sv_uuid').value.trim(),
+      svu_uuid: document.getElementById('svu_uuid').value.trim(),
+    };
   }
+
+  if (mode === 'authentication') {
+    return { con_uuid: queryConUuid };
+  }
+
   return {
     sv_uuid: document.getElementById('sv_uuid').value.trim(),
     svu_uuid: document.getElementById('svu_uuid').value.trim(),
@@ -287,25 +300,40 @@ function getIdentifiers() {
 }
 
 function initModeUi() {
-  if (mode !== 'register') {
+  if (mode === 'register') {
+    document.getElementById('manual-controls').classList.add('hidden');
+    document.getElementById('sv_uuid_hidden').value = querySvUuid;
+    document.getElementById('svu_uuid_hidden').value = querySvuUuid;
+
+    const cta = document.getElementById('complete-signup-btn');
+    cta.classList.remove('hidden');
+    cta.addEventListener('click', register);
+
+    if (!querySvUuid || !querySvuUuid) {
+      cta.disabled = true;
+      status('Missing query params. Expected mode=register&sv-uuid=...&svu-uuid=...', 'red');
+      return;
+    }
+
+    status('Ready to complete signup.', '#555');
     return;
   }
 
-  document.getElementById('manual-controls').classList.add('hidden');
-  document.getElementById('sv_uuid_hidden').value = querySvUuid;
-  document.getElementById('svu_uuid_hidden').value = querySvuUuid;
+  if (mode === 'authentication') {
+    document.getElementById('manual-controls').classList.add('hidden');
+    const authCta = document.getElementById('authenticate-btn');
+    authCta.classList.remove('hidden');
+    authCta.addEventListener('click', authenticate);
 
-  const cta = document.getElementById('complete-signup-btn');
-  cta.classList.remove('hidden');
-  cta.addEventListener('click', register);
+    if (!queryConUuid) {
+      authCta.disabled = true;
+      status('Missing query params. Expected mode=authentication&con-uuid=...', 'red');
+      return;
+    }
 
-  if (!querySvUuid || !querySvuUuid) {
-    cta.disabled = true;
-    status('Missing query params. Expected mode=register&sv-uuid=...&svu-uuid=...', 'red');
+    status('Ready to authenticate with con-uuid.', '#555');
     return;
   }
-
-  status('Ready to complete signup.', '#555');
 }
 
 async function parseJsonOrThrow(resp, action) {
@@ -364,27 +392,51 @@ async function register() {
 }
 
 async function authenticate() {
-  const { sv_uuid, svu_uuid } = getIdentifiers();
-  if (!sv_uuid || !svu_uuid) {
-    status('Please enter both sv_uuid and svu_uuid.', 'red');
-    return;
+  const ids = getIdentifiers();
+  const { sv_uuid, svu_uuid, con_uuid } = ids;
+
+  if (mode === 'authentication') {
+    if (!con_uuid) {
+      status('Please provide con-uuid in query string.', 'red');
+      return;
+    }
+  } else {
+    if (!sv_uuid || !svu_uuid) {
+      status('Please enter both sv_uuid and svu_uuid.', 'red');
+      return;
+    }
   }
+
   try {
     status('Starting authentication...');
-    const resp = await fetch(`${BASE_URL}/auth/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`);
-    const opts = normalizeWebAuthnOptions(await parseJsonOrThrow(resp, 'Auth start'));
+    const authStartUrl = mode === 'authentication'
+      ? `${BASE_URL}/auth/start?mode=authentication&con-uuid=${encodeURIComponent(con_uuid)}`
+      : `${BASE_URL}/auth/start?sv_uuid=${encodeURIComponent(sv_uuid)}&svu_uuid=${encodeURIComponent(svu_uuid)}`;
+
+    const startPayload = await parseJsonOrThrow(await fetch(authStartUrl), 'Auth start');
+    const opts = normalizeWebAuthnOptions(startPayload);
     if (!opts || !opts.challenge) {
       status('Auth failed: Invalid options from server', 'red');
       return;
     }
+    if (startPayload.steps && startPayload.steps.webauthn) {
+      status('Loaded auth context from steps.webauthn.', '#555');
+    }
+
     let attResp;
     try {
       attResp = await startAuthentication(opts);
     } catch (e) { status('Auth failed: ' + e, 'red'); return; }
+
+    const finishBody = {
+      ...attResp,
+      ...(mode === 'authentication' ? { mode: 'authentication', con_uuid } : { sv_uuid, svu_uuid }),
+    };
+
     const verification = await fetch(`${BASE_URL}/auth/finish`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ...attResp, sv_uuid, svu_uuid })
+      body: JSON.stringify(finishBody)
     });
     const result = await parseJsonOrThrow(verification, 'Auth finish');
     status(result.verified ? 'Auth success!' : 'Auth failed', result.verified ? 'green' : 'red');
@@ -400,6 +452,11 @@ async function authenticate() {
 window.register = register;
 window.authenticate = authenticate;
 initModeUi();
+
+// Auto-start auth when launched with mode=authentication and con-uuid query
+if (mode === 'authentication' && queryConUuid) {
+  authenticate();
+}
 </script>
 </body>
 </html>

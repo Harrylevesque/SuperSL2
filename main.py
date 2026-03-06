@@ -100,25 +100,17 @@ class Step4_5Payload(BaseModel):
     signature: str
 
 
-def _validate_con_uuid(con_uuid: str) -> str:
-    if not con_uuid:
-        raise HTTPException(status_code=400, detail="con_uuid is required")
-    if not con_uuid.startswith("con--"):
-        raise HTTPException(status_code=400, detail="con_uuid must start with 'con--'")
-    try:
-        parsed = UUID(con_uuid[5:])
-    except ValueError:
-        raise HTTPException(status_code=400, detail="con_uuid must include a valid UUID")
-    return f"con--{parsed}"
+# Helper to resolve mode strings
+def _is_auth_mode(mode: Optional[str]) -> bool:
+    return (mode or "").strip().lower() in {"authentication", "auth", "authenticate", "login"}
 
 
-def _resolve_sv_pair_from_session(con_uuid: str) -> tuple[str, str]:
-    normalized_con_uuid = _validate_con_uuid(con_uuid)
-    session_path = BASE_SAVE_DIR / "session" / f"{normalized_con_uuid}.json"
-    if not session_path.exists():
+# Load sv/svu from workingfiles or session using con-uuid
+def _load_sv_pair_from_file(file_path: Path) -> tuple[str, str]:
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="Session file not found")
 
-    session_data = json.loads(session_path.read_text(encoding="utf-8"))
+    session_data = json.loads(file_path.read_text(encoding="utf-8"))
     if isinstance(session_data, dict):
         sv_uuid = session_data.get("sv_uuid")
         svu_uuid = session_data.get("svu_uuid")
@@ -134,6 +126,31 @@ def _resolve_sv_pair_from_session(con_uuid: str) -> tuple[str, str]:
     return sv_uuid, svu_uuid
 
 
+def _validate_con_uuid(con_uuid: str) -> str:
+    if not con_uuid:
+        raise HTTPException(status_code=400, detail="con_uuid is required")
+    if not con_uuid.startswith("con--"):
+        raise HTTPException(status_code=400, detail="con_uuid must start with 'con--'")
+    try:
+        parsed = UUID(con_uuid[5:])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="con_uuid must include a valid UUID")
+    return f"con--{parsed}"
+
+
+def _resolve_sv_pair_from_session(con_uuid: str) -> tuple[str, str]:
+    normalized_con_uuid = _validate_con_uuid(con_uuid)
+    working_path = BASE_SAVE_DIR / "workingfiles" / f"{normalized_con_uuid}.json"
+    session_path = BASE_SAVE_DIR / "session" / f"{normalized_con_uuid}.json"
+
+    if working_path.exists():
+        return _load_sv_pair_from_file(working_path)
+    if session_path.exists():
+        return _load_sv_pair_from_file(session_path)
+
+    raise HTTPException(status_code=404, detail="Session file not found")
+
+
 def _resolve_auth_identifiers(
     mode: Optional[str],
     sv_uuid: Optional[str],
@@ -143,7 +160,7 @@ def _resolve_auth_identifiers(
     if sv_uuid and svu_uuid:
         return sv_uuid, svu_uuid
 
-    if (mode or "").strip().lower() == "authentication" and con_uuid:
+    if _is_auth_mode(mode) and con_uuid:
         return _resolve_sv_pair_from_session(con_uuid)
 
     raise HTTPException(
@@ -250,6 +267,11 @@ async def svu_step1(sv_uuid: str, svu_uuid: str, con_uuid: str, pubkey: Optional
     con_uuid_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
     con_uuid_path.parent.mkdir(parents=True, exist_ok=True)
     con_uuid_path.write_text(json.dumps(working_file, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # also persist under workingfiles for con-uuid based lookups
+    workingfile_path = BASE_SAVE_DIR / "workingfiles" / f"{con_uuid}.json"
+    workingfile_path.parent.mkdir(parents=True, exist_ok=True)
+    workingfile_path.write_text(json.dumps(working_file, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # Update status and time_of_last_completion for step1
     update_workingfile_status(con_uuid, "requested", "initialise_connection", time.time())
@@ -473,13 +495,25 @@ async def a_start(
     con_uuid: Optional[str] = None,
     con_uuid_query: Optional[str] = Query(default=None, alias="con-uuid"),
 ):
+    con_uuid_param = con_uuid or con_uuid_query
     resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
         mode,
         sv_uuid,
         svu_uuid,
-        con_uuid or con_uuid_query,
+        con_uuid_param,
     )
-    return await auth_start(resolved_sv_uuid, resolved_svu_uuid, resolve_webauthn_config(request))
+    options = await auth_start(resolved_sv_uuid, resolved_svu_uuid, resolve_webauthn_config(request))
+
+    # Include resolved identifiers and steps metadata for clients that log progress
+    payload = {
+        **options,
+        "sv_uuid": resolved_sv_uuid,
+        "svu_uuid": resolved_svu_uuid,
+    }
+    if con_uuid_param:
+        payload["con_uuid"] = _validate_con_uuid(con_uuid_param)
+    payload["steps"] = {"webauthn": options}
+    return payload
 
 @app.post("/webauth/auth/finish")
 async def a_finish(request: Request):
