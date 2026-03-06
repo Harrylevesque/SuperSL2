@@ -2,31 +2,91 @@
 <html lang="en">
 <head>
 <title>WebAuthn Demo</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 24px; }
+  .hero-btn {
+    width: 100%;
+    max-width: 520px;
+    min-height: 88px;
+    border: 0;
+    border-radius: 16px;
+    font-size: 30px;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #5c6cff, #7b5cff);
+    box-shadow: 0 16px 36px rgba(92, 108, 255, 0.35);
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    margin: 16px 0;
+  }
+  .hero-btn:hover { transform: translateY(-1px); box-shadow: 0 20px 40px rgba(92, 108, 255, 0.45); }
+  .hero-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+  .hidden { display: none; }
+</style>
 </head>
 <body>
 <h1>WebAuthn Demo (/webauth)</h1>
-<label for="sv_uuid">Service UUID (sv-... or sv--...)</label>
-<input id="sv_uuid" type="text" placeholder="sv--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
-<label for="svu_uuid">Service User UUID (svu--...)</label>
-<input id="svu_uuid" type="text" placeholder="svu--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
-<button onclick="register()">Register</button>
-<button onclick="authenticate()">Authenticate</button>
+
+<div id="manual-controls">
+  <label for="sv_uuid">Service UUID (sv-... or sv--...)</label>
+  <input id="sv_uuid" type="text" placeholder="sv--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
+  <label for="svu_uuid">Service User UUID (svu--...)</label>
+  <input id="svu_uuid" type="text" placeholder="svu--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
+  <button onclick="register()">Register</button>
+  <button onclick="authenticate()">Authenticate</button>
+</div>
+
+<input id="sv_uuid_hidden" type="hidden" />
+<input id="svu_uuid_hidden" type="hidden" />
+<button id="complete-signup-btn" class="hero-btn hidden" type="button">Complete Signup</button>
+
 <div id="status"></div>
 
 <script type="module">
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
 const BASE_URL = `${window.location.origin}/webauth`;
+const query = new URLSearchParams(window.location.search);
+const mode = (query.get('mode') || '').trim().toLowerCase();
+const querySvUuid = (query.get('sv-uuid') || query.get('sv_uuid') || '').trim();
+const querySvuUuid = (query.get('svu-uuid') || query.get('svu_uuid') || '').trim();
 
 function status(msg, color='black') {
   document.getElementById('status').innerHTML += `<p style="color:${color}">${msg}</p>`;
 }
 
 function getIdentifiers() {
+  const hiddenSv = document.getElementById('sv_uuid_hidden').value.trim();
+  const hiddenSvu = document.getElementById('svu_uuid_hidden').value.trim();
+  if (mode === 'register' && hiddenSv && hiddenSvu) {
+    return { sv_uuid: hiddenSv, svu_uuid: hiddenSvu };
+  }
   return {
     sv_uuid: document.getElementById('sv_uuid').value.trim(),
     svu_uuid: document.getElementById('svu_uuid').value.trim(),
   };
+}
+
+function initModeUi() {
+  if (mode !== 'register') {
+    return;
+  }
+
+  document.getElementById('manual-controls').classList.add('hidden');
+  document.getElementById('sv_uuid_hidden').value = querySvUuid;
+  document.getElementById('svu_uuid_hidden').value = querySvuUuid;
+
+  const cta = document.getElementById('complete-signup-btn');
+  cta.classList.remove('hidden');
+  cta.addEventListener('click', register);
+
+  if (!querySvUuid || !querySvuUuid) {
+    cta.disabled = true;
+    status('Missing query params. Expected mode=register&sv-uuid=...&svu-uuid=...', 'red');
+    return;
+  }
+
+  status('Ready to complete signup.', '#555');
 }
 
 async function parseJsonOrThrow(resp, action) {
@@ -114,6 +174,7 @@ async function authenticate() {
 
 window.register = register;
 window.authenticate = authenticate;
+initModeUi();
 </script>
 </body>
 </html>
