@@ -9,6 +9,7 @@ import json
 import os
 import time
 import logging
+import asyncio
 from pathlib import Path
 from uuid import UUID
 
@@ -330,9 +331,10 @@ async def auth_finish(body: dict, config: dict):
     con_uuid = body.get("con_uuid") or body.get("con-uuid")
     if con_uuid:
         ts = time.time()
-        logger.info("webauthn.auth_finish: updating workingfile for con_uuid=%s user_id=%s", con_uuid, user_id)
+        logger.info("webauthn.auth_finish: scheduling workingfile update for con_uuid=%s user_id=%s", con_uuid, user_id)
         try:
-            update_workingfile_status(con_uuid, "webauthn_complete", "webauthn", ts)
+            # Run blocking file IO in a thread to avoid blocking the event loop.
+            await asyncio.to_thread(update_workingfile_status, con_uuid, "webauthn_complete", "webauthn", ts)
             logger.info("webauthn.auth_finish: workingfile updated for con_uuid=%s", con_uuid)
             steps = response.setdefault("steps", {})
             steps["webauthn"] = {

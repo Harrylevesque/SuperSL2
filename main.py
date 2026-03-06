@@ -19,6 +19,7 @@ import base64
 from nacl.signing import VerifyKey  # optional for validation
 import time
 from uuid import UUID
+import asyncio
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
@@ -529,7 +530,8 @@ async def a_start(
     }
     if con_uuid_param:
         payload["con_uuid"] = _validate_con_uuid(con_uuid_param)
-    payload["steps"] = {"webauthn": options}
+    steps_obj = {"webauthn": options}
+    payload["steps"] = steps_obj
     return payload
 
 @app.post("/webauth/auth/finish")
@@ -641,3 +643,55 @@ async def webauthn_logs(lines: int = 200):
     except Exception as exc:
         logger.exception("Failed to read logs: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/webauth/auth/wait")
+async def auth_wait(con_uuid: str = Query(..., alias="con-uuid"), timeout: int = Query(60)):
+    """Block until the working/session file for `con-uuid` reports webauthn completion or until `timeout` seconds.
+    Returns the working/session JSON when complete, otherwise raises 408.
+    """
+    try:
+        validated = _validate_con_uuid(con_uuid)
+    except HTTPException:
+        validated = con_uuid
+
+    end = time.time() + float(timeout)
+    poll_interval = 0.5
+    working_path = BASE_SAVE_DIR / "workingfiles" / f"{validated}.json"
+    session_path = BASE_SAVE_DIR / "session" / f"{validated}.json"
+
+    logger.info("auth_wait started for %s timeout=%s", validated, timeout)
+    while time.time() < end:
+        p = None
+        if working_path.exists():
+            p = working_path
+        elif session_path.exists():
+            p = session_path
+
+        if p:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.debug("auth_wait: failed to read json for %s: %s", p, exc)
+                await asyncio.sleep(poll_interval)
+                continue
+
+            target = None
+            if isinstance(data, dict):
+                target = data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                target = data[0]
+
+            if target:
+                status_val = target.get("status")
+                steps = target.get("steps") or {}
+                web = steps.get("webauthn") if isinstance(steps, dict) else None
+                if status_val == "webauthn_complete":
+                    logger.info("auth_wait: found status webauthn_complete for %s", validated)
+                    return JSONResponse(target)
+                if isinstance(web, dict) and web.get("status") == "complete":
+                    logger.info("auth_wait: found steps.webauthn.complete for %s", validated)
+                    return JSONResponse(target)
+        await asyncio.sleep(poll_interval)
+
+    logger.warning("auth_wait timeout waiting for webauthn completion for %s", validated)
+    raise HTTPException(status_code=408, detail="Timeout waiting for webauthn completion")
