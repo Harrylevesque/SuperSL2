@@ -2,7 +2,7 @@
 Rewritten main.py: single FastAPI app, request models for OpenAPI, and all existing endpoints
 preserved and annotated so /docs shows complete schemas.
 """
-from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Body
+from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ import dotenv
 import base64
 from nacl.signing import VerifyKey  # optional for validation
 import time
+from uuid import UUID
 
 from flow.signup import new_user, new_user_service, new_user_service_user
 from flow.adddevice import enroll_device
@@ -97,6 +98,58 @@ class Step3_5Payload(BaseModel):
 class Step4_5Payload(BaseModel):
     payload_json: str
     signature: str
+
+
+def _validate_con_uuid(con_uuid: str) -> str:
+    if not con_uuid:
+        raise HTTPException(status_code=400, detail="con_uuid is required")
+    if not con_uuid.startswith("con--"):
+        raise HTTPException(status_code=400, detail="con_uuid must start with 'con--'")
+    try:
+        parsed = UUID(con_uuid[5:])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="con_uuid must include a valid UUID")
+    return f"con--{parsed}"
+
+
+def _resolve_sv_pair_from_session(con_uuid: str) -> tuple[str, str]:
+    normalized_con_uuid = _validate_con_uuid(con_uuid)
+    session_path = BASE_SAVE_DIR / "session" / f"{normalized_con_uuid}.json"
+    if not session_path.exists():
+        raise HTTPException(status_code=404, detail="Session file not found")
+
+    session_data = json.loads(session_path.read_text(encoding="utf-8"))
+    if isinstance(session_data, dict):
+        sv_uuid = session_data.get("sv_uuid")
+        svu_uuid = session_data.get("svu_uuid")
+    elif isinstance(session_data, list) and session_data and isinstance(session_data[0], dict):
+        sv_uuid = session_data[0].get("sv_uuid")
+        svu_uuid = session_data[0].get("svu_uuid")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid session file format")
+
+    if not sv_uuid or not svu_uuid:
+        raise HTTPException(status_code=400, detail="sv_uuid or svu_uuid missing in session file")
+
+    return sv_uuid, svu_uuid
+
+
+def _resolve_auth_identifiers(
+    mode: Optional[str],
+    sv_uuid: Optional[str],
+    svu_uuid: Optional[str],
+    con_uuid: Optional[str],
+) -> tuple[str, str]:
+    if sv_uuid and svu_uuid:
+        return sv_uuid, svu_uuid
+
+    if (mode or "").strip().lower() == "authentication" and con_uuid:
+        return _resolve_sv_pair_from_session(con_uuid)
+
+    raise HTTPException(
+        status_code=400,
+        detail="Provide sv_uuid and svu_uuid, or use mode=authentication with con_uuid",
+    )
 
 # --- Endpoints ---
 
@@ -412,12 +465,42 @@ async def reg_finish(request: Request):
     return await register_finish(body, resolve_webauthn_config(request))
 
 @app.get("/webauth/auth/start")
-async def a_start(request: Request, sv_uuid: str, svu_uuid: str):
-    return await auth_start(sv_uuid, svu_uuid, resolve_webauthn_config(request))
+async def a_start(
+    request: Request,
+    mode: Optional[str] = None,
+    sv_uuid: Optional[str] = None,
+    svu_uuid: Optional[str] = None,
+    con_uuid: Optional[str] = None,
+    con_uuid_query: Optional[str] = Query(default=None, alias="con-uuid"),
+):
+    resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
+        mode,
+        sv_uuid,
+        svu_uuid,
+        con_uuid or con_uuid_query,
+    )
+    return await auth_start(resolved_sv_uuid, resolved_svu_uuid, resolve_webauthn_config(request))
 
 @app.post("/webauth/auth/finish")
 async def a_finish(request: Request):
     body = await request.json()
+    mode = body.get("mode") or request.query_params.get("mode")
+    con_uuid = (
+        body.get("con_uuid")
+        or body.get("con-uuid")
+        or request.query_params.get("con_uuid")
+        or request.query_params.get("con-uuid")
+    )
+
+    resolved_sv_uuid, resolved_svu_uuid = _resolve_auth_identifiers(
+        mode,
+        body.get("sv_uuid"),
+        body.get("svu_uuid"),
+        con_uuid,
+    )
+    body["sv_uuid"] = resolved_sv_uuid
+    body["svu_uuid"] = resolved_svu_uuid
+
     return await auth_finish(body, resolve_webauthn_config(request))
 
 # Ensure /config.json is always available at the root, regardless of subpath or mount
