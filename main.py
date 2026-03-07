@@ -29,6 +29,7 @@ from flow.workingfile import workingfile, update_workingfile_status
 from config import BASE_SAVE_DIR
 from flow.keymatch import get_pubk
 from flow.keypair import generate_challenge as generate_keypair_challenge, verify_client_signature
+from flow.humans import humans as humanInfo
 from flow.otp import (
     generate_challenge as generate_otp_challenge,
     verify_client_signature as verify_otp_signature,
@@ -217,13 +218,15 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
 
     result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk)
 
+    humans = humanInfo()
+
     # echo keys back so the client saver can persist them
     if isinstance(result, dict):
         result["client_pubk"] = client_pubk_b64
         result["otp_pubK"] = otp_pubk
         return result
 
-    return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk}
+    return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk, "humans": humans}
 
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
