@@ -219,7 +219,7 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
 
     humans = humanInfo()
 
-    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk, humans=humans)
+    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk)
 
 
     # echo keys back so the client saver can persist them

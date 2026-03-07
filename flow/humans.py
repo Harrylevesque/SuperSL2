@@ -1,8 +1,15 @@
 import dotenv
 import os
 
+"""
+Dear human reading this,
 
+Computers prefer stable identifiers like UUIDs.
+Humans prefer meaningful names.
 
+This branch exists to bridge those two worlds.
+
+"""
 
 def humans():
     dotenv.load_dotenv()
