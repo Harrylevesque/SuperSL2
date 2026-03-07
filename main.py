@@ -231,6 +231,11 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
     return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk, "humans": humans}
 
 
+@app.get("/humans")
+async def get_humans():
+    humans = humanInfo()
+    return humans
+
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
 async def add_device_api(u_uuid: str, payload: AddDeviceRequest):
     result = enroll_device(u_uuid, payload.k, payload.ip)
