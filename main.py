@@ -216,9 +216,11 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
     except Exception:
         raise HTTPException(status_code=400, detail="client_pubk is not a valid signing public key")
 
-    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk)
 
     humans = humanInfo()
+
+    result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk, humans=humans)
+
 
     # echo keys back so the client saver can persist them
     if isinstance(result, dict):
