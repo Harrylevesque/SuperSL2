@@ -29,6 +29,7 @@ from flow.workingfile import workingfile, update_workingfile_status
 from config import BASE_SAVE_DIR
 from flow.keymatch import get_pubk
 from flow.keypair import generate_challenge as generate_keypair_challenge, verify_client_signature
+from flow.humans import humans as humanInfo
 from flow.otp import (
     generate_challenge as generate_otp_challenge,
     verify_client_signature as verify_otp_signature,
@@ -215,7 +216,11 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
     except Exception:
         raise HTTPException(status_code=400, detail="client_pubk is not a valid signing public key")
 
+
+    humans = humanInfo()
+
     result = new_user_service_user(serviceuuid, client_pubk=client_pubk_b64, otp_pubK=otp_pubk)
+
 
     # echo keys back so the client saver can persist them
     if isinstance(result, dict):
@@ -223,8 +228,13 @@ async def new_user_service_user_api(serviceuuid: str = FastAPIPath(..., descript
         result["otp_pubK"] = otp_pubk
         return result
 
-    return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk}
+    return {"result": result, "client_pubk": client_pubk_b64, "otp_pubK": otp_pubk, "humans": humans}
 
+
+@app.get("/humans")
+async def get_humans():
+    humans = humanInfo()
+    return humans
 
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
 async def add_device_api(u_uuid: str, payload: AddDeviceRequest):

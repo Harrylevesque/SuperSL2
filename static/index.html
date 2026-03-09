@@ -161,7 +161,6 @@
 </head>
 <body>
 <h1>WebAuthn Demo (/webauth)</h1>
-
 <div id="manual-controls">
   <label for="sv_uuid">Service UUID (sv-... or sv--...)</label>
   <input id="sv_uuid" type="text" placeholder="sv--xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="margin-bottom:10px; display:block;" />
@@ -191,6 +190,8 @@
 </div>
 
 <script type="module">
+  // thank you to junajuan on codepen for the confetti code
+  //https://codepen.io/l2zeo/pen/ZEBLepW
 import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@10/+esm';
 
 const BASE_URL = `${window.location.origin}/webauth`;
