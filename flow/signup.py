@@ -105,8 +105,18 @@ def new_user(pubk, keypairs=None):
 
 
 def new_user_service(serviceuuid, pubk=None, keypairs=None):
-    # ignore incoming serviceuuid and generate a new one (keeps previous behaviour)
-    serviceuuid = str(f"sv--{uuid.uuid4()}")
+    # Use provided serviceuuid if it's valid, otherwise generate a new one
+    if serviceuuid and isinstance(serviceuuid, str) and serviceuuid.startswith("sv--"):
+        # Validate it's a proper UUID format after the prefix
+        try:
+            uuid.UUID(serviceuuid[5:])
+            # Valid custom UUID provided, use it
+        except (ValueError, IndexError):
+            # Invalid format, generate new one
+            serviceuuid = str(f"sv--{uuid.uuid4()}")
+    else:
+        # Generate new UUID if not provided or invalid
+        serviceuuid = str(f"sv--{uuid.uuid4()}")
     directory = BASE_SAVE_DIR / "user" / serviceuuid
     filename = f"{serviceuuid}.json"
     filepath = directory / filename
