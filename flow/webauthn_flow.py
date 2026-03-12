@@ -106,18 +106,12 @@ def resolve_webauthn_config(request) -> dict:
 
 def _normalize_sv_uuid(sv_uuid: str) -> str:
     if sv_uuid.startswith("sv--"):
-        raw_uuid = sv_uuid[4:]
+        return sv_uuid
     elif sv_uuid.startswith("sv-"):
-        raw_uuid = sv_uuid[3:]
+        return sv_uuid
     else:
         raise HTTPException(status_code=400, detail="sv_uuid must start with 'sv-' or 'sv--'")
 
-    try:
-        parsed = UUID(raw_uuid)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="sv_uuid must include a valid UUID")
-
-    return f"sv--{str(parsed)}"
 
 
 def _normalize_svu_uuid(svu_uuid: str) -> str:
