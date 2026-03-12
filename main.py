@@ -236,6 +236,106 @@ async def get_humans():
     humans = humanInfo()
     return humans
 
+
+@app.get("/login/sustain/{con_uuid}/")
+async def sust(con_uuid: str):
+    payload_json = generate_otp_challenge()
+    payload = json.loads(payload_json)
+    # Keep both raw payload_json and flattened fields for client compatibility.
+    return {
+        "payload_json": payload_json,
+        "challenge": payload.get("challenge"),
+        "issued_at": payload.get("issued_at"),
+        "challenge_id": payload.get("challenge_id"),
+        "con_uuid": con_uuid,
+    }
+
+
+
+@app.post("/login/sustain/{con_uuid}/")
+async def sust_verify(con_uuid: str, payload: Step4_5Payload):
+    payload_json = payload.payload_json
+    signature_b64 = payload.signature
+
+    session_path = BASE_SAVE_DIR / "session" / f"{con_uuid}.json"
+    if not session_path.exists():
+        raise HTTPException(status_code=404, detail="Session file not found")
+
+    with open(session_path, "r") as f:
+        session_data = json.load(f)
+
+    if isinstance(session_data, dict):
+        sv_uuid = session_data.get("sv_uuid")
+        svu_uuid = session_data.get("svu_uuid")
+    elif isinstance(session_data, list) and len(session_data) > 0 and isinstance(session_data[0], dict):
+        sv_uuid = session_data[0].get("sv_uuid")
+        svu_uuid = session_data[0].get("svu_uuid")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid session file format")
+
+    if not sv_uuid or not svu_uuid:
+        raise HTTPException(status_code=400, detail="sv_uuid or svu_uuid missing in session file")
+
+    user_path = BASE_SAVE_DIR / "user" / sv_uuid / f"{svu_uuid}.json"
+    if not user_path.exists():
+        raise HTTPException(status_code=404, detail="User file not found")
+
+    with open(user_path, "r") as f2:
+        user_data = json.load(f2)
+
+    keychain = user_data.get("keychain", {})
+    otp_pubk_b64 = keychain.get("otp_pubK")
+    if not otp_pubk_b64:
+        raise HTTPException(status_code=404, detail="otp_pubK not found in user file")
+
+    try:
+        otp_pubk = base64.b64decode(otp_pubk_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="otp_pubK must be a valid base64 string")
+
+    try:
+        signature = base64.b64decode(signature_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="signature must be a valid base64 string")
+
+    ok = verify_otp_signature(otp_pubk, payload_json, signature)
+
+    # Write sustain entry to the working/session file
+    working_path = BASE_SAVE_DIR / "workingfiles" / f"{con_uuid}.json"
+    sustain_entry = {
+        "timestamp": time.time(),
+        "signature_valid": ok,
+        "status": "complete" if ok else "failed"
+    }
+
+    # Update the session/working file with sustain section
+    try:
+        if working_path.exists():
+            working_data = json.loads(working_path.read_text(encoding="utf-8"))
+        else:
+            working_data = json.loads(session_path.read_text(encoding="utf-8"))
+
+        # Ensure sustain section exists
+        if "sustain" not in working_data:
+            working_data["sustain"] = []
+
+        # Add the new sustain entry
+        working_data["sustain"].append(sustain_entry)
+
+        # Write back to working file
+        working_path.parent.mkdir(parents=True, exist_ok=True)
+        working_path.write_text(json.dumps(working_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.error(f"Failed to write sustain entry to working file: {e}")
+
+    if ok == True:
+        return {"signature_valid": ok, "time_of_last_completion": time.time(), "status": "complete" if ok else "faild"}
+    else:
+        return {"signature_valid": False, "status": "fail"}
+
+
+
+
 @app.post("/user/adddevice/{u_uuid}", tags=["device"], summary="Enroll a new device for user")
 async def add_device_api(u_uuid: str, payload: AddDeviceRequest):
     result = enroll_device(u_uuid, payload.k, payload.ip)
